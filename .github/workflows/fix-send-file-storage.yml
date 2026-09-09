@@ -1,0 +1,43 @@
+name: Fix dynamic storage delivery
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[dynamic-storage-fixed]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch send_file.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('handlers/send_file.py')
+          s = p.read_text(encoding='utf-8')
+
+          old = '''async def media_forward(bot: Client, user_id: int, file_id: int):\n    try:\n        protect_content = await db.get_protect_content()\n        if Config.FORWARD_AS_COPY:\n            return await bot.copy_message(\n                chat_id=user_id,\n                from_chat_id=Config.DB_CHANNEL,\n                message_id=file_id,\n                protect_content=protect_content,\n            )\n        return await bot.forward_messages(\n            chat_id=user_id,\n            from_chat_id=Config.DB_CHANNEL,\n            message_ids=file_id,\n            protect_content=protect_content,\n        )\n'''
+          new = '''async def media_forward(bot: Client, user_id: int, file_id: int):\n    try:\n        channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured.")\n\n        protect_content = await db.get_protect_content()\n        if Config.FORWARD_AS_COPY:\n            return await bot.copy_message(\n                chat_id=user_id,\n                from_chat_id=channel_id,\n                message_id=file_id,\n                protect_content=protect_content,\n            )\n        return await bot.forward_messages(\n            chat_id=user_id,\n            from_chat_id=channel_id,\n            message_ids=file_id,\n            protect_content=protect_content,\n        )\n'''
+          if old not in s:
+              raise SystemExit('media_forward block not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Validate Python syntax
+        run: python -m py_compile bot.py handlers/*.py configs.py
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add handlers/send_file.py
+          git diff --cached --quiet && exit 0
+          git commit -m "[dynamic-storage-fixed] Use auto-detected storage channel for delivery"
+          git push
