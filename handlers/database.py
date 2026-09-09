@@ -100,10 +100,14 @@ class Database:
         await self._execute(lambda: self.client.table(self.settings_table).upsert({"key": key, "value": str(value)}, on_conflict="key").execute())
 
     async def get_db_channel_id(self):
+        # Supabase is the persistent source of truth. DB_CHANNEL is only a bootstrap
+        # fallback so a stale Voroa environment variable cannot override saved channels.
+        channels = await self.get_storage_channels()
+        if channels:
+            return channels[0]
         if Config.DB_CHANNEL:
             return int(Config.DB_CHANNEL)
-        channels = await self.get_storage_channels()
-        return channels[0] if channels else None
+        return None
 
     async def set_db_channel_id(self, channel_id):
         await self.add_storage_channel(channel_id)
