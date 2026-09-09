@@ -53,7 +53,10 @@ create table if not exists public.bot_settings (
 );
 
 insert into public.bot_settings (key, value)
-values ('auto_delete_seconds', '1800')
+values
+    ('auto_delete_seconds', '1800'),
+    ('protect_forward', 'false'),
+    ('protect_download', 'false')
 on conflict (key) do nothing;
 
 alter table public.bot_settings enable row level security;
