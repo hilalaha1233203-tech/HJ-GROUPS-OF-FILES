@@ -35,6 +35,15 @@ class Database:
     async def _execute(self, operation):
         return await asyncio.to_thread(operation)
 
+    @staticmethod
+    def _ban_status(row):
+        return {
+            "is_banned": bool(row.get("is_banned", False)),
+            "ban_duration": int(row.get("ban_duration", 0)),
+            "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
+            "ban_reason": row.get("ban_reason", "") or "",
+        }
+
     def new_user(self, id):
         return dict(
             id=int(id),
@@ -47,12 +56,18 @@ class Database:
 
     async def add_user(self, id):
         await self._execute(
-            lambda: self.client.table(self.table).upsert(self.new_user(id), on_conflict="id").execute()
+            lambda: self.client.table(self.table).upsert(
+                self.new_user(id), on_conflict="id"
+            ).execute()
         )
 
     async def is_user_exist(self, id):
         response = await self._execute(
-            lambda: self.client.table(self.table).select("id").eq("id", int(id)).limit(1).execute()
+            lambda: self.client.table(self.table)
+            .select("id")
+            .eq("id", int(id))
+            .limit(1)
+            .execute()
         )
         return bool(response.data)
 
@@ -71,18 +86,16 @@ class Database:
         )
         rows = []
         for row in response.data or []:
-            row["ban_status"] = {
-                "is_banned": bool(row.get("is_banned", False)),
-                "ban_duration": int(row.get("ban_duration", 0)),
-                "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
-                "ban_reason": row.get("ban_reason", "") or "",
-            }
+            row["ban_status"] = self._ban_status(row)
             rows.append(row)
         return _AsyncCursor(rows)
 
     async def delete_user(self, user_id):
         await self._execute(
-            lambda: self.client.table(self.table).delete().eq("id", int(user_id)).execute()
+            lambda: self.client.table(self.table)
+            .delete()
+            .eq("id", int(user_id))
+            .execute()
         )
 
     async def remove_ban(self, id):
@@ -131,13 +144,7 @@ class Database:
         )
         if not response.data:
             return default
-        row = response.data[0]
-        return {
-            "is_banned": bool(row.get("is_banned", False)),
-            "ban_duration": int(row.get("ban_duration", 0)),
-            "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
-            "ban_reason": row.get("ban_reason", "") or "",
-        }
+        return self._ban_status(response.data[0])
 
     async def get_all_banned_users(self):
         response = await self._execute(
@@ -149,12 +156,7 @@ class Database:
         )
         rows = []
         for row in response.data or []:
-            row["ban_status"] = {
-                "is_banned": True,
-                "ban_duration": int(row.get("ban_duration", 0)),
-                "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
-                "ban_reason": row.get("ban_reason", "") or "",
-            }
+            row["ban_status"] = self._ban_status(row)
             rows.append(row)
         return _AsyncCursor(rows)
 
