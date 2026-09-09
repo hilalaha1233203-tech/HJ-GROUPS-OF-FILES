@@ -40,11 +40,6 @@ async def start(bot: Client, cmd: Message):
         await cmd.reply_text("Sorry, You are banned.")
         return
 
-    if Config.UPDATES_CHANNEL is not None:
-        back = await handle_force_sub(bot, cmd)
-        if back == 400:
-            return
-
     usr_cmd = cmd.text.split("_", 1)[-1]
     if usr_cmd == "/start":
         await add_user_to_database(bot, cmd)
@@ -86,11 +81,6 @@ async def start(bot: Client, cmd: Message):
 async def main(bot: Client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
         await add_user_to_database(bot, message)
-
-        if Config.UPDATES_CHANNEL is not None:
-            back = await handle_force_sub(bot, message)
-            if back == 400:
-                return
 
         if message.from_user.id in Config.BANNED_USERS:
             await message.reply_text(
@@ -187,13 +177,22 @@ async def broadcast_handler_open(_, m: Message):
 
 @Bot.on_message(filters.private & filters.command("settings") & filters.user(Config.BOT_OWNER))
 async def settings(_, m: Message):
+    await show_settings(m)
+
+
+async def show_settings(message):
     delay = await db.get_auto_delete_seconds()
     current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
-    await m.reply_text(
-        "**⚙️ HJ GROUPS BOT SETTINGS**\n\n"
-        f"**Auto-delete delivered files:** `{current}`\n\n"
-        "Choose how long a file delivered through a start/share link remains in the user's chat.\n"
-        "This setting is available to the bot owner only.",
+    protection = await db.get_protection_settings()
+    forward_state = "ON" if protection["protect_forward"] else "OFF"
+    download_state = "ON" if protection["protect_download"] else "OFF"
+    await message.reply_text(
+        "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\n\n"
+        f"**Auto-delete delivered files:** `{current}`\n"
+        f"**Restrict Forwarding:** `{forward_state}`\n"
+        f"**Restrict Saving / Download:** `{download_state}`\n\n"
+        "Telegram uses one native content-protection switch for forwarding and saving. "
+        "If either protection is ON, delivered files use Telegram's protected-content mode.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("5 min", callback_data="setdel_300"),
              InlineKeyboardButton("15 min", callback_data="setdel_900"),
@@ -201,7 +200,9 @@ async def settings(_, m: Message):
             [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),
              InlineKeyboardButton("6 hours", callback_data="setdel_21600"),
              InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
-            [InlineKeyboardButton("♾️ Disable", callback_data="setdel_0")],
+            [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],
+            [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),
+             InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],
             [InlineKeyboardButton("Close", callback_data="closeMessage")]
         ])
     )
@@ -400,16 +401,58 @@ async def button(bot: Client, cmd: CallbackQuery):
         except Exception as err:
             await cmd.answer(f"Could not save setting: {err}", show_alert=True)
 
+    elif cb_data in {"toggle_protect_forward", "toggle_protect_download"}:
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
+            await cmd.answer("You are not allowed to change bot settings.", show_alert=True)
+            return
+        key = "protect_forward" if cb_data == "toggle_protect_forward" else "protect_download"
+        current_settings = await db.get_protection_settings()
+        new_value = not current_settings[key]
+        try:
+            await db.set_protection_setting(key, new_value)
+            await cmd.answer("Protection setting saved.")
+            delay = await db.get_auto_delete_seconds()
+            current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
+            protection = await db.get_protection_settings()
+            forward_state = "ON" if protection["protect_forward"] else "OFF"
+            download_state = "ON" if protection["protect_download"] else "OFF"
+            await cmd.message.edit(
+                "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\n\n"
+                f"**Auto-delete delivered files:** `{current}`\n"
+                f"**Restrict Forwarding:** `{forward_state}`\n"
+                f"**Restrict Saving / Download:** `{download_state}`\n\n"
+                "If either protection is ON, Telegram protected-content mode is enabled.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("5 min", callback_data="setdel_300"),
+                     InlineKeyboardButton("15 min", callback_data="setdel_900"),
+                     InlineKeyboardButton("30 min", callback_data="setdel_1800")],
+                    [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),
+                     InlineKeyboardButton("6 hours", callback_data="setdel_21600"),
+                     InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
+                    [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],
+                    [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),
+                     InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],
+                    [InlineKeyboardButton("Close", callback_data="closeMessage")]
+                ])
+            )
+        except Exception as err:
+            await cmd.answer(f"Could not save setting: {err}", show_alert=True)
+
     elif cb_data == "open_settings":
         if int(cmd.from_user.id) != Config.BOT_OWNER:
             await cmd.answer("You are not allowed to open bot settings.", show_alert=True)
             return
         delay = await db.get_auto_delete_seconds()
         current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
+        protection = await db.get_protection_settings()
+        forward_state = "ON" if protection["protect_forward"] else "OFF"
+        download_state = "ON" if protection["protect_download"] else "OFF"
         await cmd.message.edit(
-            "**⚙️ HJ GROUPS BOT SETTINGS**\n\n"
-            f"**Auto-delete delivered files:** `{current}`\n\n"
-            "Choose how long a delivered file remains in the user's chat.",
+            "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\n\n"
+            f"**Auto-delete delivered files:** `{current}`\n"
+            f"**Restrict Forwarding:** `{forward_state}`\n"
+            f"**Restrict Saving / Download:** `{download_state}`\n\n"
+            "If either protection is ON, Telegram protected-content mode is enabled.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("5 min", callback_data="setdel_300"),
                  InlineKeyboardButton("15 min", callback_data="setdel_900"),
@@ -417,7 +460,9 @@ async def button(bot: Client, cmd: CallbackQuery):
                 [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),
                  InlineKeyboardButton("6 hours", callback_data="setdel_21600"),
                  InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
-                [InlineKeyboardButton("♾️ Disable", callback_data="setdel_0")],
+                [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],
+                [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),
+                 InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],
                 [InlineKeyboardButton("Close", callback_data="closeMessage")]
             ])
         )
