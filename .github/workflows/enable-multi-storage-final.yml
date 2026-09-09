@@ -22,49 +22,26 @@ jobs:
           from pathlib import Path
           import re
 
-          # bot.py
           p = Path('bot.py')
           s = p.read_text(encoding='utf-8')
+          s = re.sub(r'def make_share_link\(message_id: int\) -> str:\n.*?\n\n\ndef parse_db_message_link', '''def make_share_link(message_id: int, channel_id: int | None = None) -> str:\n    if channel_id is None:\n        raise ValueError("Storage channel is required for a share link")\n    token = str_to_b64(f"{int(channel_id)}|{int(message_id)}")\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"\n\n\ndef parse_db_message_link''', s, flags=re.S)
+          s = re.sub(r'async def resolve_existing_db_message\(bot: Client, message: Message\):\n.*?\n\n\nasync def send_existing_db_link', '''async def _bot_is_admin_in_channel(bot: Client, channel_id: int) -> bool:\n    try:\n        me = await bot.get_me()\n        member = await bot.get_chat_member(int(channel_id), int(me.id))\n        return str(member.status).lower() in {"administrator", "owner"}\n    except Exception:\n        return False\n\n\nasync def resolve_existing_db_message(bot: Client, message: Message):\n    registered = await db.get_storage_channels()\n    forwarded_chat = getattr(message, "forward_from_chat", None)\n    forwarded_message_id = getattr(message, "forward_from_message_id", None)\n    if forwarded_chat is not None and forwarded_message_id:\n        channel_id = int(forwarded_chat.id)\n        if channel_id not in registered and await _bot_is_admin_in_channel(bot, channel_id):\n            await db.add_storage_channel(channel_id)\n            registered.append(channel_id)\n        if channel_id in registered:\n            return channel_id, int(forwarded_message_id)\n\n    parsed = parse_db_message_link(message.text or message.caption or "")\n    if parsed is None:\n        return None\n    channel_ref, message_id = parsed\n    if isinstance(channel_ref, int):\n        channel_id = int(channel_ref)\n        if channel_id not in registered and await _bot_is_admin_in_channel(bot, channel_id):\n            await db.add_storage_channel(channel_id)\n            registered.append(channel_id)\n        return (channel_id, int(message_id)) if channel_id in registered else None\n    try:\n        chat = await bot.get_chat(channel_ref)\n        channel_id = int(chat.id)\n        if channel_id not in registered and await _bot_is_admin_in_channel(bot, channel_id):\n            await db.add_storage_channel(channel_id)\n            registered.append(channel_id)\n        return (channel_id, int(message_id)) if channel_id in registered else None\n    except Exception:\n        return None\n\n\nasync def send_existing_db_link''', s, flags=re.S)
+          s = re.sub(r'async def send_existing_db_link\(bot: Client, cmd: Message, message_id: int\):\n.*?\n\n\n@Bot\.on_message\(filters\.private\)', '''async def send_existing_db_link(bot: Client, cmd: Message, channel_id: int, message_id: int):\n    db_message = await bot.get_messages(chat_id=int(channel_id), message_ids=int(message_id))\n    if not db_message or int(db_message.id) <= 0:\n        raise ValueError("Database message not found")\n    share_link = make_share_link(int(db_message.id), int(channel_id))\n    short_link = get_short(share_link)\n    buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]\n    if short_link != share_link:\n        buttons[0].append(InlineKeyboardButton("Short Link", url=short_link))\n    await cmd.reply_text("**Existing Database File Found!**\\n\\n" f"Here is the Permanent Link of your file: {short_link}\\n\\n" "The existing Telegram file was reused; it was not uploaded again.", reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)\n\n\n@Bot.on_message(filters.private)''', s, flags=re.S)
 
-          s = re.sub(
-              r'def make_share_link\(message_id: int\) -> str:\n.*?\n\n\ndef parse_db_message_link',
-              '''def make_share_link(message_id: int, channel_id: int | None = None) -> str:\n    if channel_id is None:\n        raise ValueError("Storage channel is required for a share link")\n    token = str_to_b64(f"{int(channel_id)}|{int(message_id)}")\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"\n\n\ndef parse_db_message_link''',
-              s,
-              flags=re.S,
-          )
-
-          s = re.sub(
-              r'async def resolve_existing_db_message\(bot: Client, message: Message\):\n.*?\n\n\nasync def send_existing_db_link',
-              '''async def _bot_is_admin_in_channel(bot: Client, channel_id: int) -> bool:\n    try:\n        me = await bot.get_me()\n        member = await bot.get_chat_member(int(channel_id), int(me.id))\n        return str(member.status).lower() in {"administrator", "owner"}\n    except Exception:\n        return False\n\n\nasync def resolve_existing_db_message(bot: Client, message: Message):\n    """Resolve an existing message from any trusted storage channel.\n\n    A new channel is auto-registered only when this bot is an admin/owner there.\n    """\n    registered = await db.get_storage_channels()\n\n    forwarded_chat = getattr(message, "forward_from_chat", None)\n    forwarded_message_id = getattr(message, "forward_from_message_id", None)\n    if forwarded_chat is not None and forwarded_message_id:\n        channel_id = int(forwarded_chat.id)\n        if channel_id not in registered and await _bot_is_admin_in_channel(bot, channel_id):\n            await db.add_storage_channel(channel_id)\n            registered.append(channel_id)\n        if channel_id in registered:\n            return channel_id, int(forwarded_message_id)\n\n    parsed = parse_db_message_link(message.text or message.caption or "")\n    if parsed is None:\n        return None\n\n    channel_ref, message_id = parsed\n    if isinstance(channel_ref, int):\n        channel_id = int(channel_ref)\n        if channel_id not in registered and await _bot_is_admin_in_channel(bot, channel_id):\n            await db.add_storage_channel(channel_id)\n            registered.append(channel_id)\n        if channel_id in registered:\n            return channel_id, int(message_id)\n        return None\n\n    try:\n        chat = await bot.get_chat(channel_ref)\n        channel_id = int(chat.id)\n        if channel_id not in registered and await _bot_is_admin_in_channel(bot, channel_id):\n            await db.add_storage_channel(channel_id)\n            registered.append(channel_id)\n        if channel_id in registered:\n            return channel_id, int(message_id)\n    except Exception:\n        return None\n    return None\n\n\nasync def send_existing_db_link''',
-              s,
-              flags=re.S,
-          )
-
-          s = re.sub(
-              r'async def send_existing_db_link\(bot: Client, cmd: Message, message_id: int\):\n.*?\n\n\n@Bot\.on_message\(filters\.private\)',
-              '''async def send_existing_db_link(bot: Client, cmd: Message, channel_id: int, message_id: int):\n    """Validate an existing message and generate a link without re-uploading it."""\n    db_message = await bot.get_messages(chat_id=int(channel_id), message_ids=int(message_id))\n    if not db_message or int(db_message.id) <= 0:\n        raise ValueError("Database message not found")\n\n    share_link = make_share_link(int(db_message.id), int(channel_id))\n    short_link = get_short(share_link)\n    buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]\n    if short_link != share_link:\n        buttons[0].append(InlineKeyboardButton("Short Link", url=short_link))\n\n    await cmd.reply_text(\n        "**Existing Database File Found!**\\n\\n"\n        f"Here is the Permanent Link of your file: {short_link}\\n\\n"\n        "The existing Telegram file was reused; it was not uploaded again.",\n        reply_markup=InlineKeyboardMarkup(buttons),\n        disable_web_page_preview=True,\n    )\n\n\n@Bot.on_message(filters.private)''',
-              s,
-              flags=re.S,
-          )
-
-          # Replace start payload parsing and delivery.
           old = '''        try:\n            file_id = int(b64_to_str(usr_cmd).split("_")[-1])\n        except (Error, UnicodeDecodeError):\n            file_id = int(usr_cmd.split("_")[-1])\n\n        channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n'''
-          new = '''        try:\n            decoded = b64_to_str(usr_cmd)\n        except (Error, UnicodeDecodeError):\n            decoded = usr_cmd\n\n        if "|" in decoded:\n            channel_part, message_part = decoded.rsplit("|", 1)\n            channel_id = int(channel_part)\n            file_id = int(message_part)\n        else:\n            channel_id = await db.get_db_channel_id()\n            if channel_id is None:\n                raise RuntimeError("No storage channel is configured yet. Forward a message from a channel where this bot is an admin.")\n            file_id = int(decoded.split("_")[-1])\n\n        if not await db.is_storage_channel(channel_id):\n            raise RuntimeError("This storage channel is not registered with the bot.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n'''
-          if old not in s:\n              raise SystemExit("start block not found")\n          s = s.replace(old, new, 1)
+          new = '''        try:\n            decoded = b64_to_str(usr_cmd)\n        except (Error, UnicodeDecodeError):\n            decoded = usr_cmd\n        if "|" in decoded:\n            channel_part, message_part = decoded.rsplit("|", 1)\n            channel_id = int(channel_part)\n            file_id = int(message_part)\n        else:\n            channel_id = await db.get_db_channel_id()\n            if channel_id is None:\n                raise RuntimeError("No storage channel is configured yet.")\n            file_id = int(decoded.split("_")[-1])\n        if not await db.is_storage_channel(channel_id):\n            raise RuntimeError("This storage channel is not registered with the bot.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n'''
+          if old not in s: raise SystemExit('start block not found')
+          s = s.replace(old, new, 1)
           s = s.replace('await send_media_and_reply(bot, user_id=cmd.from_user.id, file_id=int(message_id))', 'await send_media_and_reply(bot, user_id=cmd.from_user.id, file_id=int(message_id), channel_id=channel_id)')
 
-          # Existing-message path now returns (channel_id, message_id).
           old2 = '''            existing_message_id = await resolve_existing_db_message(bot, message)\n            if existing_message_id is not None:\n                await send_existing_db_link(bot, message, existing_message_id)\n                return\n'''
           new2 = '''            existing = await resolve_existing_db_message(bot, message)\n            if existing is not None:\n                existing_channel_id, existing_message_id = existing\n                await send_existing_db_link(bot, message, existing_channel_id, existing_message_id)\n                return\n'''
-          if old2 not in s:\n              raise SystemExit("existing-message block not found")\n          s = s.replace(old2, new2, 1)
-
-          # Channel posting path uses first configured storage channel.
-          s = s.replace('''            channel_id = await db.get_db_channel_id()\n            if channel_id is None:\n                raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n            forwarded_msg = await message.forward(channel_id)''', '''            channel_id = await db.get_db_channel_id()\n            if channel_id is None:\n                raise RuntimeError("No storage channel is configured yet.")\n            forwarded_msg = await message.forward(channel_id)''', 1)
+          if old2 not in s: raise SystemExit('existing-message block not found')
+          s = s.replace(old2, new2, 1)
           s = s.replace('share_link = make_share_link(int(file_er_id))', 'share_link = make_share_link(int(file_er_id), int(channel_id))', 1)
 
           p.write_text(s, encoding='utf-8')
 
-          # send_file.py
           p = Path('handlers/send_file.py')
           s = p.read_text(encoding='utf-8')
           s = s.replace('async def media_forward(bot: Client, user_id: int, file_id: int):', 'async def media_forward(bot: Client, user_id: int, file_id: int, channel_id: int | None = None):')
@@ -74,7 +51,6 @@ jobs:
           s = s.replace('sent_message = await media_forward(bot, user_id, file_id)', 'sent_message = await media_forward(bot, user_id, file_id, channel_id)', 1)
           p.write_text(s, encoding='utf-8')
 
-          # save_media.py: generated links must include the storage channel.
           p = Path('handlers/save_media.py')
           s = p.read_text(encoding='utf-8')
           s = s.replace('str_to_b64(str(SaveMessage.id))', 'str_to_b64(f"{channel_id}|{SaveMessage.id}")')
@@ -82,15 +58,13 @@ jobs:
           p.write_text(s, encoding='utf-8')
           PY
 
-      - name: Update schema
+      - name: Update schema source
         run: |
           python - <<'PY'
           from pathlib import Path
           p = Path('supabase_schema.sql')
           s = p.read_text(encoding='utf-8')
-          line = "    ('storage_channels', '[]'),\n"
-          marker = "values\n"
-          if line not in s and "('auto_delete_seconds', '1800')" in s:
+          if "('storage_channels', '[]')" not in s and "('auto_delete_seconds', '1800')" in s:
               s = s.replace("values\n    ('auto_delete_seconds', '1800'),", "values\n    ('storage_channels', '[]'),\n    ('auto_delete_seconds', '1800'),", 1)
           p.write_text(s, encoding='utf-8')
           PY
