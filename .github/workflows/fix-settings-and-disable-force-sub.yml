@@ -1,0 +1,59 @@
+name: Fix settings and disable force subscribe
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: !contains(github.event.head_commit.message, '[settings-auto-fix]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch bot.py
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('bot.py')
+          s = p.read_text(encoding='utf-8')
+
+          # Force Subscribe is intentionally disabled for HJ GROUPS OF FILES.
+          s = s.replace('''    if Config.UPDATES_CHANNEL is not None:\n        back = await handle_force_sub(bot, cmd)\n        if back == 400:\n            return\n\n''', '')
+          s = s.replace('''        if Config.UPDATES_CHANNEL is not None:\n            back = await handle_force_sub(bot, message)\n            if back == 400:\n                return\n\n''', '')
+
+          old_settings = '''@Bot.on_message(filters.private & filters.command("settings") & filters.user(Config.BOT_OWNER))\nasync def settings(_, m: Message):\n    delay = await db.get_auto_delete_seconds()\n    current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"\n    await m.reply_text(\n        "**⚙️ HJ GROUPS BOT SETTINGS**\\n\\n"\n        f"**Auto-delete delivered files:** `{current}`\\n\\n"\n        "Choose how long a file delivered through a start/share link remains in the user's chat.\\n"\n        "This setting is available to the bot owner only.",\n        reply_markup=InlineKeyboardMarkup([\n            [InlineKeyboardButton("5 min", callback_data="setdel_300"),\n             InlineKeyboardButton("15 min", callback_data="setdel_900"),\n             InlineKeyboardButton("30 min", callback_data="setdel_1800")],\n            [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),\n             InlineKeyboardButton("6 hours", callback_data="setdel_21600"),\n             InlineKeyboardButton("24 hours", callback_data="setdel_86400")],\n            [InlineKeyboardButton("♾️ Disable", callback_data="setdel_0")],\n            [InlineKeyboardButton("Close", callback_data="closeMessage")]\n        ])\n    )\n'''
+          new_settings = '''@Bot.on_message(filters.private & filters.command("settings") & filters.user(Config.BOT_OWNER))\nasync def settings(_, m: Message):\n    await show_settings(m)\n\n\nasync def show_settings(message):\n    delay = await db.get_auto_delete_seconds()\n    current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"\n    protection = await db.get_protection_settings()\n    forward_state = "ON" if protection["protect_forward"] else "OFF"\n    download_state = "ON" if protection["protect_download"] else "OFF"\n    await message.reply_text(\n        "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\\n\\n"\n        f"**Auto-delete delivered files:** `{current}`\\n"\n        f"**Restrict Forwarding:** `{forward_state}`\\n"\n        f"**Restrict Saving / Download:** `{download_state}`\\n\\n"\n        "Telegram uses one native content-protection switch for forwarding and saving. "\n        "If either protection is ON, delivered files use Telegram's protected-content mode.",\n        reply_markup=InlineKeyboardMarkup([\n            [InlineKeyboardButton("5 min", callback_data="setdel_300"),\n             InlineKeyboardButton("15 min", callback_data="setdel_900"),\n             InlineKeyboardButton("30 min", callback_data="setdel_1800")],\n            [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),\n             InlineKeyboardButton("6 hours", callback_data="setdel_21600"),\n             InlineKeyboardButton("24 hours", callback_data="setdel_86400")],\n            [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],\n            [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),\n             InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],\n            [InlineKeyboardButton("Close", callback_data="closeMessage")]\n        ])\n    )\n'''
+          if old_settings not in s:
+              raise SystemExit('settings block not found')
+          s = s.replace(old_settings, new_settings)
+
+          old_open = '''    elif cb_data == "open_settings":\n        if int(cmd.from_user.id) != Config.BOT_OWNER:\n            await cmd.answer("You are not allowed to open bot settings.", show_alert=True)\n            return\n        delay = await db.get_auto_delete_seconds()\n        current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"\n        await cmd.message.edit(\n            "**⚙️ HJ GROUPS BOT SETTINGS**\\n\\n"\n            f"**Auto-delete delivered files:** `{current}`\\n\\n"\n            "Choose how long a delivered file remains in the user's chat.",\n            reply_markup=InlineKeyboardMarkup([\n                [InlineKeyboardButton("5 min", callback_data="setdel_300"),\n                 InlineKeyboardButton("15 min", callback_data="setdel_900"),\n                 InlineKeyboardButton("30 min", callback_data="setdel_1800")],\n                [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),\n                 InlineKeyboardButton("6 hours", callback_data="setdel_21600"),\n                 InlineKeyboardButton("24 hours", callback_data="setdel_86400")],\n                [InlineKeyboardButton("♾️ Disable", callback_data="setdel_0")],\n                [InlineKeyboardButton("Close", callback_data="closeMessage")]\n            ])\n        )\n'''
+          new_open = '''    elif cb_data == "open_settings":\n        if int(cmd.from_user.id) != Config.BOT_OWNER:\n            await cmd.answer("You are not allowed to open bot settings.", show_alert=True)\n            return\n        delay = await db.get_auto_delete_seconds()\n        current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"\n        protection = await db.get_protection_settings()\n        forward_state = "ON" if protection["protect_forward"] else "OFF"\n        download_state = "ON" if protection["protect_download"] else "OFF"\n        await cmd.message.edit(\n            "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\\n\\n"\n            f"**Auto-delete delivered files:** `{current}`\\n"\n            f"**Restrict Forwarding:** `{forward_state}`\\n"\n            f"**Restrict Saving / Download:** `{download_state}`\\n\\n"\n            "If either protection is ON, Telegram protected-content mode is enabled.",\n            reply_markup=InlineKeyboardMarkup([\n                [InlineKeyboardButton("5 min", callback_data="setdel_300"),\n                 InlineKeyboardButton("15 min", callback_data="setdel_900"),\n                 InlineKeyboardButton("30 min", callback_data="setdel_1800")],\n                [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),\n                 InlineKeyboardButton("6 hours", callback_data="setdel_21600"),\n                 InlineKeyboardButton("24 hours", callback_data="setdel_86400")],\n                [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],\n                [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),\n                 InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],\n                [InlineKeyboardButton("Close", callback_data="closeMessage")]\n            ])\n        )\n'''
+          if old_open not in s:
+              raise SystemExit('open_settings block not found')
+          s = s.replace(old_open, new_open)
+
+          marker = '''    elif cb_data == "open_settings":\n'''
+          protection_handlers = '''    elif cb_data in {"toggle_protect_forward", "toggle_protect_download"}:\n        if int(cmd.from_user.id) != Config.BOT_OWNER:\n            await cmd.answer("You are not allowed to change bot settings.", show_alert=True)\n            return\n        key = "protect_forward" if cb_data == "toggle_protect_forward" else "protect_download"\n        current_settings = await db.get_protection_settings()\n        new_value = not current_settings[key]\n        try:\n            await db.set_protection_setting(key, new_value)\n            await cmd.answer("Protection setting saved.")\n            delay = await db.get_auto_delete_seconds()\n            current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"\n            protection = await db.get_protection_settings()\n            forward_state = "ON" if protection["protect_forward"] else "OFF"\n            download_state = "ON" if protection["protect_download"] else "OFF"\n            await cmd.message.edit(\n                "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\\n\\n"\n                f"**Auto-delete delivered files:** `{current}`\\n"\n                f"**Restrict Forwarding:** `{forward_state}`\\n"\n                f"**Restrict Saving / Download:** `{download_state}`\\n\\n"\n                "If either protection is ON, Telegram protected-content mode is enabled.",\n                reply_markup=InlineKeyboardMarkup([\n                    [InlineKeyboardButton("5 min", callback_data="setdel_300"),\n                     InlineKeyboardButton("15 min", callback_data="setdel_900"),\n                     InlineKeyboardButton("30 min", callback_data="setdel_1800")],\n                    [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),\n                     InlineKeyboardButton("6 hours", callback_data="setdel_21600"),\n                     InlineKeyboardButton("24 hours", callback_data="setdel_86400")],\n                    [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],\n                    [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),\n                     InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],\n                    [InlineKeyboardButton("Close", callback_data="closeMessage")]\n                ])\n            )\n        except Exception as err:\n            await cmd.answer(f"Could not save setting: {err}", show_alert=True)\n\n'''
+          if protection_handlers not in s:
+              if marker not in s:
+                  raise SystemExit('settings callback marker not found')
+              s = s.replace(marker, protection_handlers + marker, 1)
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bot.py
+          git diff --cached --quiet && exit 0
+          git commit -m "[settings-auto-fix] Disable force subscribe and add protection settings"
+          git push
