@@ -1,0 +1,36 @@
+name: Storage recovery finalizer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch recovery and channel links
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('bot.py')
+          s=p.read_text()
+          s=s.replace('if Config.DB_CHANNEL:\n        stored.append(int(Config.DB_CHANNEL))', 'if Config.DB_CHANNEL:\n        stored.append(int(Config.DB_CHANNEL))\n    # Legacy HJ storage channel used by existing permanent links.\n    stored.append(-1004394820141)')
+          s=s.replace('share_link = make_share_link(int(file_er_id))', 'share_link = make_share_link(int(file_er_id), channel_id)')
+          p.write_text(s)
+          PY
+          python3 -m py_compile bot.py
+      - name: Commit finalizer
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add bot.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Finalize legacy storage channel recovery"
+          git push origin HEAD:main
