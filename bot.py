@@ -47,9 +47,7 @@ def parse_db_message_link(text: str):
             channel_id = int(f"-100{channel_part}")
         except ValueError:
             return None
-        if channel_id == Config.DB_CHANNEL:
-            return message_id
-        return None
+        return (channel_id, message_id)
 
     match = re.search(r"https?://(?:t\.me|telegram\.me)/([A-Za-z0-9_]+)/([0-9]+)", text, flags=re.I)
     if match and Config.BOT_USERNAME:
@@ -61,27 +59,45 @@ async def resolve_existing_db_message(bot: Client, message: Message):
     """Resolve an already-stored DB-channel message from a forwarded message or Telegram link."""
     forwarded_chat = getattr(message, "forward_from_chat", None)
     forwarded_message_id = getattr(message, "forward_from_message_id", None)
+    db_channel_id = await db.get_db_channel_id()
+
     if forwarded_chat is not None and forwarded_message_id:
-        if int(forwarded_chat.id) == int(Config.DB_CHANNEL):
+        source_channel_id = int(forwarded_chat.id)
+        if db_channel_id is None:
+            if int(message.from_user.id) != int(Config.BOT_OWNER):
+                return None
+            # First owner-forward automatically configures the storage channel.
+            await bot.get_chat(source_channel_id)
+            await db.set_db_channel_id(source_channel_id)
+            return int(forwarded_message_id)
+        if source_channel_id == int(db_channel_id):
             return int(forwarded_message_id)
 
     parsed = parse_db_message_link(message.text or message.caption or "")
-    if isinstance(parsed, int):
-        return parsed
-    if isinstance(parsed, tuple):
-        public_chat, message_id = parsed
-        try:
-            chat = await bot.get_chat(public_chat)
-            if int(chat.id) == int(Config.DB_CHANNEL):
-                return message_id
-        except Exception:
+    if parsed is None:
+        return None
+
+    channel_ref, message_id = parsed
+    if isinstance(channel_ref, int):
+        if db_channel_id is None:
             return None
+        return int(message_id) if int(channel_ref) == int(db_channel_id) else None
+
+    try:
+        chat = await bot.get_chat(channel_ref)
+        if db_channel_id is not None and int(chat.id) == int(db_channel_id):
+            return int(message_id)
+    except Exception:
+        return None
     return None
 
 
 async def send_existing_db_link(bot: Client, cmd: Message, message_id: int):
     """Validate an existing DB message and return a FileStore link without re-uploading it."""
-    db_message = await bot.get_messages(chat_id=Config.DB_CHANNEL, message_ids=int(message_id))
+    channel_id = await db.get_db_channel_id()
+    if channel_id is None:
+        raise RuntimeError("Storage channel is not configured. Forward one message from the private storage channel to the bot first.")
+    db_message = await bot.get_messages(chat_id=channel_id, message_ids=int(message_id))
     if not db_message or int(db_message.id) <= 0:
         raise ValueError("DB channel message not found")
 
@@ -130,7 +146,10 @@ async def start(bot: Client, cmd: Message):
         except (Error, UnicodeDecodeError):
             file_id = int(usr_cmd.split("_")[-1])
 
-        get_message = await bot.get_messages(chat_id=Config.DB_CHANNEL, message_ids=file_id)
+        channel_id = await db.get_db_channel_id()
+        if channel_id is None:
+            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")
+        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)
         message_ids = []
         if get_message.text:
             message_ids = [x for x in get_message.text.split() if x]
@@ -179,7 +198,7 @@ async def main(bot: Client, message: Message):
         if message.text and ("t.me/" in message.text.lower() or "telegram.me/" in message.text.lower()):
             await message.reply_text(
                 "That message link is not from the configured Database Channel.\n\n"
-                f"Configured DB Channel: `{Config.DB_CHANNEL}`"
+                f"Configured DB Channel: `{await db.get_db_channel_id()}`"
             )
             return
 
@@ -217,7 +236,10 @@ async def main(bot: Client, message: Message):
             return
 
         try:
-            forwarded_msg = await message.forward(Config.DB_CHANNEL)
+            channel_id = await db.get_db_channel_id()
+            if channel_id is None:
+                raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")
+            forwarded_msg = await message.forward(channel_id)
             file_er_id = str(forwarded_msg.id)
             share_link = make_share_link(int(file_er_id))
             ch_edit = await bot.edit_message_reply_markup(
