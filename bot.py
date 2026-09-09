@@ -4,6 +4,7 @@ import os
 import asyncio
 import traceback
 import time
+import re
 from binascii import Error
 from pyrogram import Client, enums, filters, idle
 from pyrogram.errors import UserNotParticipant, FloodWait, QueryIdInvalid
@@ -15,7 +16,7 @@ from handlers.send_file import send_media_and_reply
 from handlers.helpers import b64_to_str, str_to_b64
 from handlers.check_user_status import handle_user_status
 from handlers.broadcast_handlers import main_broadcast_handler
-from handlers.save_media import save_media_in_channel, save_batch_media_in_channel
+from handlers.save_media import save_media_in_channel, save_batch_media_in_channel, get_short
 
 MediaList = {}
 
@@ -26,6 +27,81 @@ Bot = Client(
     api_id=Config.API_ID,
     api_hash=Config.API_HASH
 )
+
+
+def make_share_link(message_id: int) -> str:
+    token = str_to_b64(str(int(message_id)))
+    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"
+
+
+def parse_db_message_link(text: str):
+    """Return a DB-channel message id when text contains a Telegram link to this DB channel."""
+    if not text:
+        return None
+
+    match = re.search(r"https?://(?:t\.me|telegram\.me)/c/(\d+)/(\d+)", text, flags=re.I)
+    if match:
+        channel_part = match.group(1)
+        message_id = int(match.group(2))
+        try:
+            channel_id = int(f"-100{channel_part}")
+        except ValueError:
+            return None
+        if channel_id == Config.DB_CHANNEL:
+            return message_id
+        return None
+
+    match = re.search(r"https?://(?:t\.me|telegram\.me)/([A-Za-z0-9_]+)/([0-9]+)", text, flags=re.I)
+    if match and Config.BOT_USERNAME:
+        # Public username links are not valid DB references unless the configured DB_CHANNEL
+        # itself uses that username. Resolve it through Telegram before accepting the link.
+        return ("@" + match.group(1), int(match.group(2)))
+    return None
+
+
+async def resolve_existing_db_message(bot: Client, message: Message):
+    """Resolve an already-stored DB-channel message from a forwarded message or Telegram link."""
+    # Forwarded message from the configured private DB channel.
+    forwarded_chat = getattr(message, "forward_from_chat", None)
+    forwarded_message_id = getattr(message, "forward_from_message_id", None)
+    if forwarded_chat is not None and forwarded_message_id:
+        if int(forwarded_chat.id) == int(Config.DB_CHANNEL):
+            return int(forwarded_message_id)
+
+    # Pasted / shared Telegram message link.
+    parsed = parse_db_message_link(message.text or message.caption or "")
+    if isinstance(parsed, int):
+        return parsed
+    if isinstance(parsed, tuple):
+        public_chat, message_id = parsed
+        try:
+            chat = await bot.get_chat(public_chat)
+            if int(chat.id) == int(Config.DB_CHANNEL):
+                return message_id
+        except Exception:
+            return None
+    return None
+
+
+async def send_existing_db_link(bot: Client, cmd: Message, message_id: int):
+    """Validate an existing DB message and return a FileStore link without re-uploading it."""
+    db_message = await bot.get_messages(chat_id=Config.DB_CHANNEL, message_ids=int(message_id))
+    if not db_message or int(db_message.id) <= 0:
+        raise ValueError("DB channel message not found")
+
+    share_link = make_share_link(int(db_message.id))
+    short_link = get_short(share_link)
+    buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
+    if short_link != share_link:
+        buttons[0].append(InlineKeyboardButton("Short Link", url=short_link))
+
+    await cmd.reply_text(
+        "**Existing Database File Found!**\n\n"
+        f"Here is the Permanent Link of your file: {short_link}\n\n"
+        "This file was already stored in the configured Database Channel, so it was not uploaded again.",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        disable_web_page_preview=True,
+    )
 
 
 @Bot.on_message(filters.private)
@@ -76,7 +152,10 @@ async def start(bot: Client, cmd: Message):
         await cmd.reply_text(f"Something went wrong!\n\n**Error:** `{err}`")
 
 
-@Bot.on_message((filters.document | filters.video | filters.audio | filters.photo) & ~filters.chat(Config.DB_CHANNEL))
+@Bot.on_message(
+    (filters.document | filters.video | filters.audio | filters.photo | filters.text)
+    & filters.private
+)
 async def main(bot: Client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
         await add_user_to_database(bot, message)
@@ -88,15 +167,38 @@ async def main(bot: Client, message: Message):
             )
             return
 
-        await message.reply_text(
-            text="**Choose an option from below:**",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📦 Save in Batch", callback_data="addToBatchTrue")],
-                [InlineKeyboardButton("🔗 Get Sharable Link", callback_data="addToBatchFalse")]
-            ]),
-            quote=True,
-            disable_web_page_preview=True
-        )
+        # Reuse an already-stored DB-channel message instead of uploading it again.
+        try:
+            existing_message_id = await resolve_existing_db_message(bot, message)
+            if existing_message_id is not None:
+                await send_existing_db_link(bot, message, existing_message_id)
+                return
+        except Exception as err:
+            await message.reply_text(
+                "Could not read that Database Channel message.\n\n"
+                f"**Error:** `{err}`\n\n"
+                "Make sure the bot is an admin/member of the configured Database Channel."
+            )
+            return
+
+        # A plain message-link to another chat is not accepted as a DB reference.
+        if message.text and ("t.me/" in message.text.lower() or "telegram.me/" in message.text.lower()):
+            await message.reply_text(
+                "That message link is not from the configured Database Channel.\n\n"
+                f"Configured DB Channel: `{Config.DB_CHANNEL}`"
+            )
+            return
+
+        if message.media:
+            await message.reply_text(
+                text="**Choose an option from below:**",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📦 Save in Batch", callback_data="addToBatchTrue")],
+                    [InlineKeyboardButton("🔗 Get Sharable Link", callback_data="addToBatchFalse")]
+                ]),
+                quote=True,
+                disable_web_page_preview=True
+            )
 
     elif message.chat.type == enums.ChatType.CHANNEL:
         updates_id = None
@@ -123,7 +225,7 @@ async def main(bot: Client, message: Message):
         try:
             forwarded_msg = await message.forward(Config.DB_CHANNEL)
             file_er_id = str(forwarded_msg.id)
-            share_link = f"https://t.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(file_er_id)}"
+            share_link = make_share_link(int(file_er_id))
             ch_edit = await bot.edit_message_reply_markup(
                 message.chat.id,
                 message.id,
@@ -427,30 +529,7 @@ async def button(bot: Client, cmd: CallbackQuery):
         if int(cmd.from_user.id) != Config.BOT_OWNER:
             await cmd.answer("You are not allowed to open bot settings.", show_alert=True)
             return
-        delay = await db.get_auto_delete_seconds()
-        current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
-        protection = await db.get_protection_settings()
-        forward_state = "ON" if protection["protect_forward"] else "OFF"
-        download_state = "ON" if protection["protect_download"] else "OFF"
-        await cmd.message.edit(
-            "**⚙️ HJ GROUPS STORE KEEPER — SETTINGS**\n\n"
-            f"**Auto-delete delivered files:** `{current}`\n"
-            f"**Restrict Forwarding:** `{forward_state}`\n"
-            f"**Restrict Saving / Download:** `{download_state}`\n\n"
-            "If either protection is ON, Telegram protected-content mode is enabled.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("5 min", callback_data="setdel_300"),
-                 InlineKeyboardButton("15 min", callback_data="setdel_900"),
-                 InlineKeyboardButton("30 min", callback_data="setdel_1800")],
-                [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),
-                 InlineKeyboardButton("6 hours", callback_data="setdel_21600"),
-                 InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
-                [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],
-                [InlineKeyboardButton(f"🚫 Forward: {forward_state}", callback_data="toggle_protect_forward"),
-                 InlineKeyboardButton(f"🚫 Download: {download_state}", callback_data="toggle_protect_download")],
-                [InlineKeyboardButton("Close", callback_data="closeMessage")]
-            ])
-        )
+        await show_settings(cmd.message)
 
     elif cb_data == "closeMessage":
         await cmd.message.delete(True)
