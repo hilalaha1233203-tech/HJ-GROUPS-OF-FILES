@@ -29,14 +29,14 @@ async def get_invite_link(bot: Client, chat_id: Union[str, int]):
             await asyncio.sleep(e.value)
 
 
-async def handle_force_sub(bot: Client, cmd: Message):
+async def handle_force_sub(bot: Client, cmd: Message, user_id=None):
     channel_chat_id = _channel_id(Config.UPDATES_CHANNEL)
     if channel_chat_id is None:
         return 200
 
     # For normal messages use from_user; for a Refresh callback message,
     # from_user is the bot, so the private chat id identifies the user.
-    user_id = cmd.from_user.id if cmd.from_user else cmd.chat.id
+    user_id = user_id or (cmd.from_user.id if cmd.from_user else cmd.chat.id)
 
     try:
         member = await bot.get_chat_member(
