@@ -30,17 +30,21 @@ async def reply_forward(message: Message, file_id: int, delay: int):
 
 async def media_forward(bot: Client, user_id: int, file_id: int):
     try:
+        channel_id = await db.get_db_channel_id()
+        if channel_id is None:
+            raise RuntimeError("Storage channel is not configured.")
+
         protect_content = await db.get_protect_content()
         if Config.FORWARD_AS_COPY:
             return await bot.copy_message(
                 chat_id=user_id,
-                from_chat_id=Config.DB_CHANNEL,
+                from_chat_id=channel_id,
                 message_id=file_id,
                 protect_content=protect_content,
             )
         return await bot.forward_messages(
             chat_id=user_id,
-            from_chat_id=Config.DB_CHANNEL,
+            from_chat_id=channel_id,
             message_ids=file_id,
             protect_content=protect_content,
         )
