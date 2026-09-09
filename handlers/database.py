@@ -35,7 +35,6 @@ class Database:
 
     @staticmethod
     def _ban_status(row):
-        # Support both the new scalar-column schema and the original JSON shape.
         legacy = row.get("ban_status") or {}
         return {
             "is_banned": bool(row.get("is_banned", legacy.get("is_banned", False))),
@@ -134,26 +133,49 @@ class Database:
             rows.append(row)
         return _AsyncCursor(rows)
 
-    async def get_auto_delete_seconds(self):
+    async def _get_setting(self, key, default):
         try:
             response = await self._execute(
                 lambda: self.client.table(self.settings_table)
-                .select("value").eq("key", "auto_delete_seconds").limit(1).execute()
+                .select("value").eq("key", key).limit(1).execute()
             )
             if response.data:
-                return int(response.data[0]["value"])
+                return response.data[0]["value"]
         except Exception as err:
-            print(f"Auto-delete setting unavailable, using 1800 seconds: {err}")
-        return 1800
+            print(f"Setting '{key}' unavailable, using default: {err}")
+        return default
 
-    async def set_auto_delete_seconds(self, seconds):
-        seconds = int(seconds)
+    async def _set_setting(self, key, value):
         await self._execute(
             lambda: self.client.table(self.settings_table).upsert(
-                {"key": "auto_delete_seconds", "value": str(seconds)},
+                {"key": key, "value": str(value)},
                 on_conflict="key"
             ).execute()
         )
+
+    async def get_auto_delete_seconds(self):
+        try:
+            return int(await self._get_setting("auto_delete_seconds", "1800"))
+        except (TypeError, ValueError):
+            return 1800
+
+    async def set_auto_delete_seconds(self, seconds):
+        await self._set_setting("auto_delete_seconds", int(seconds))
+
+    async def get_protection_settings(self):
+        return {
+            "protect_forward": str(await self._get_setting("protect_forward", "false")).lower() == "true",
+            "protect_download": str(await self._get_setting("protect_download", "false")).lower() == "true",
+        }
+
+    async def set_protection_setting(self, key, enabled):
+        if key not in {"protect_forward", "protect_download"}:
+            raise ValueError("Invalid protection setting")
+        await self._set_setting(key, "true" if enabled else "false")
+
+    async def get_protect_content(self):
+        settings = await self.get_protection_settings()
+        return settings["protect_forward"] or settings["protect_download"]
 
 
 db = Database(Config.SUPABASE_URL, Config.BOT_USERNAME)
