@@ -12,7 +12,11 @@ class Config(object):
 	SHORTLINK_API = os.environ.get('SHORTLINK_API')
 	BOT_OWNER = int(os.environ.get("BOT_OWNER", "1445283714"))
 	SUPABASE_URL = os.environ.get("SUPABASE_URL")
-	SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+	SUPABASE_KEY = (
+		os.environ.get("SUPABASE_SECRET_KEY")
+		or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+		or os.environ.get("SUPABASE_KEY")
+	)
 	UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL", "")
 	LOG_CHANNEL = os.environ.get("LOG_CHANNEL", None)
 	BANNED_USERS = set(int(x) for x in os.environ.get("BANNED_USERS", "1234567890").split())
@@ -43,7 +47,7 @@ Send Me any Media or File. I can Work In Channel too. Add Me to Channel with Edi
 ╰──────[ 😎 ]───────────⍟
 """
 	ABOUT_DEV_TEXT = f"""
-🧑🏻‍💻 **𝗗𝗲𝘃𝗲𝗹𝗼𝗽𝗲𝗿:** [@PredatorHackerzZ](https://github.com/PredatorHackerzZ)
+🧑🏻‍💻 **𝗗𝗲𝘃𝗲𝗹𝗼𝗽𝗲𝗿:** [@PredatorHackerZz](https://github.com/PredatorHackerzZ)
  
  I am Super noob Please Support My Hard Work.
 
