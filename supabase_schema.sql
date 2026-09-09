@@ -1,5 +1,5 @@
 -- HJ GROUPS OF FILES - Supabase user database
--- Compatible with both the current Supabase adapter and an older cached build.
+-- Compatible with the current Supabase adapter.
 
 create table if not exists public.users (
     id bigint primary key,
@@ -8,7 +8,6 @@ create table if not exists public.users (
     ban_duration bigint not null default 0,
     banned_on text not null default '9999-12-31',
     ban_reason text not null default '',
-    -- Compatibility field for an older cached database.py build.
     ban_status jsonb
 );
 
@@ -42,11 +41,8 @@ alter table public.users alter column banned_on set not null;
 alter table public.users alter column ban_reason set not null;
 
 create index if not exists users_is_banned_idx on public.users (is_banned);
-
 alter table public.users enable row level security;
 
-
--- Persistent admin settings
 create table if not exists public.bot_settings (
     key text primary key,
     value text not null
@@ -58,5 +54,8 @@ values
     ('protect_forward', 'false'),
     ('protect_download', 'false')
 on conflict (key) do nothing;
+
+-- The bot writes the detected private Telegram storage channel here on first owner forward.
+create index if not exists bot_settings_key_idx on public.bot_settings (key);
 
 alter table public.bot_settings enable row level security;
