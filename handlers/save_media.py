@@ -20,7 +20,7 @@ def generate_random_alphanumeric():
 def _user_can_save(user_id: int) -> bool:
     """Empty allow-list means all users are allowed, matching normal FileStore behavior."""
     allowed_users = Config.OTHER_USERS_CAN_SAVE_FILE
-    return not allowed_users or int(user_id) in allowed_users
+    return int(user_id) == Config.BOT_OWNER or not allowed_users or int(user_id) in allowed_users
 
 
 def get_short(url):
