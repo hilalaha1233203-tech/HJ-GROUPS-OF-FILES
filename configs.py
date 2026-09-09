@@ -20,12 +20,20 @@ class Config(object):
         or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
         or os.environ.get("SUPABASE_KEY")
     )
-    # Kept only as a compatibility alias for any older imported code.
+    # Compatibility alias for older upstream imports.
     DATABASE_URL = SUPABASE_URL
 
     # Optional channel settings. Blank means disabled.
     UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL") or None
     LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None
+
+    # Empty means all users are allowed to save files.
+    # When IDs are supplied, only those users can use the save buttons.
+    OTHER_USERS_CAN_SAVE_FILE = [
+        int(user_id)
+        for user_id in os.environ.get("OTHER_USERS_CAN_SAVE_FILE", "").split(",")
+        if user_id.strip()
+    ]
 
     BANNED_USERS = set(
         int(x) for x in os.environ.get("BANNED_USERS", "").split() if x.strip()
@@ -39,31 +47,18 @@ class Config(object):
             if x.strip()
         )
     )
-    OTHER_USERS_CAN_SAVE_FILE = [
-        int(user_id)
-        for user_id in os.environ.get("OTHER_USERS_CAN_SAVE_FILE", "").split(",")
-        if user_id.strip()
-    ]
 
-    ABOUT_BOT_TEXT = f"""
+    ABOUT_BOT_TEXT = """
 **HJ GROUPS OF FILES**
 
 Permanent Telegram File Store Bot.
 
-📁 Send any supported file or media to save it in the configured private Telegram database channel and receive a shareable link.
+📁 Send any supported file or media to save it in the configured private Telegram database channel and receive a permanent shareable link.
 
-🔐 Supabase is used only for user/status records.
+🔐 Supabase is used for user/status records.
 ☁️ Actual files remain stored in the configured Telegram DB channel.
 
-Use the Commands button below to see the available bot commands.
-"""
-
-    ABOUT_DEV_TEXT = """
-**HJ GROUPS OF FILES**
-
-This bot is maintained for HJ GROUPS.
-
-The original TG-FileStore functionality is preserved, with Supabase used as the user database and Voroa used for hosting.
+Supports private file storage, batch mode, channel mode, force subscribe, short links, broadcasts and admin user controls.
 """
 
     HOME_TEXT = """
@@ -77,5 +72,29 @@ This is a permanent Telegram **FileStore Bot**.
 
 ⚡ Fast • Simple • Permanent
 
-Use **Commands** to view the available bot commands.
+Use **Commands** to view all available commands and features.
+"""
+
+    COMMANDS_TEXT = """
+**HJ GROUPS OF FILES — COMMANDS**
+
+**User commands**
+`/start` — Open the bot and retrieve shared files
+`/clear_batch` — Clear your current batch
+
+**Owner commands**
+`/status` — Show total registered users
+`/broadcast` — Broadcast a replied message to users
+`/ban_user` — Ban a user for a number of days
+`/unban_user` — Remove a user ban
+`/banned_users` — List banned users
+
+**Main features**
+• Private file saving with permanent share links
+• Batch file saving and batch links
+• Channel file storage mode
+• Force subscribe
+• Optional URL shortener
+• Supabase user/status database
+• Telegram DB channel file storage
 """
