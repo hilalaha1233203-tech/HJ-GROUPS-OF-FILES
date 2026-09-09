@@ -153,6 +153,20 @@ class Database:
             ).execute()
         )
 
+    async def get_db_channel_id(self):
+        if Config.DB_CHANNEL is not None:
+            return int(Config.DB_CHANNEL)
+        value = await self._get_setting("db_channel_id", None)
+        if value in (None, "", "null"):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    async def set_db_channel_id(self, channel_id):
+        await self._set_setting("db_channel_id", int(channel_id))
+
     async def get_auto_delete_seconds(self):
         try:
             return int(await self._get_setting("auto_delete_seconds", "1800"))
