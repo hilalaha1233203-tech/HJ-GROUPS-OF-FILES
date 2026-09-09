@@ -28,9 +28,9 @@ async def reply_forward(message: Message, file_id: int, delay: int):
         await reply_forward(message, file_id, delay)
 
 
-async def media_forward(bot: Client, user_id: int, file_id: int):
+async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None):
     try:
-        channel_id = await db.get_db_channel_id()
+        channel_id = channel_id or await db.get_db_channel_id()
         if channel_id is None:
             raise RuntimeError("Storage channel is not configured.")
 
@@ -63,8 +63,8 @@ async def delete_after_delay(message, delay):
         print(f"Auto-delete failed: {err}")
 
 
-async def send_media_and_reply(bot: Client, user_id: int, file_id: int):
-    sent_message = await media_forward(bot, user_id, file_id)
+async def send_media_and_reply(bot: Client, user_id: int, file_id: int, channel_id=None):
+    sent_message = await media_forward(bot, user_id, file_id, channel_id)
     if sent_message is None:
         return
     delay = await db.get_auto_delete_seconds()

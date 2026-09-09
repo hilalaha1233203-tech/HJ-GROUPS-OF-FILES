@@ -94,7 +94,7 @@ async def save_batch_media_in_channel(bot: Client, editable: Message, message_id
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Delete Batch", callback_data="closeMessage")]])
         )
-        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(str(SaveMessage.id))}"
+        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f"{channel_id}|{SaveMessage.id}")}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
@@ -127,7 +127,7 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
             except Exception:
                 pass
 
-        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(file_er_id)}"
+        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f"{channel_id}|{file_er_id}")}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
