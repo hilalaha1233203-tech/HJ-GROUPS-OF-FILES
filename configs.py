@@ -51,14 +51,14 @@ class Config(object):
     ABOUT_BOT_TEXT = """
 **HJ GROUPS OF FILES**
 
-Permanent Telegram File Store Bot.
+Permanent Telegram FileStore Bot.
 
-📁 Send any supported file or media to save it in the configured private Telegram database channel and receive a permanent shareable link.
+📁 Send any supported file or media to save it in the configured private Telegram database channel and receive a shareable link.
 
 🔐 Supabase is used for user/status records.
-☁️ Actual files remain stored in the configured Telegram DB channel.
+☁️ Files remain stored in the configured Telegram DB channel.
 
-Supports private file storage, batch mode, channel mode, force subscribe, short links, broadcasts and admin user controls.
+Supports private file saving, batch mode, channel mode, force subscribe, short links, broadcasts and admin user controls.
 """
 
     HOME_TEXT = """
