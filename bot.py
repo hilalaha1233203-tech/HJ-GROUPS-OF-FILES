@@ -292,8 +292,19 @@ async def broadcast_handler_open(_, m: Message):
     await main_broadcast_handler(m, db)
 
 
-@Bot.on_message(filters.private & filters.command("settings") & filters.user(Config.BOT_OWNER))
+@Bot.on_message(filters.private & filters.command("settings"))
 async def settings(_, m: Message):
+    # Do not put the owner check in the Pyrogram filter: that silently drops
+    # the command when BOT_OWNER is wrong. Always reply with a useful result.
+    if not Config.BOT_OWNER or int(m.from_user.id) != int(Config.BOT_OWNER):
+        configured = Config.BOT_OWNER if Config.BOT_OWNER else "NOT SET"
+        await m.reply_text(
+            "⛔ **Owner/Admin Only**\n\n"
+            f"Your Telegram ID: `{m.from_user.id}`\n"
+            f"Configured BOT_OWNER: `{configured}`\n\n"
+            "If you are the owner, set **BOT_OWNER** in Voroa to your Telegram user ID, then redeploy/restart the bot."
+        )
+        return
     await show_settings(m)
 
 
@@ -579,13 +590,21 @@ async def validate_db_channel_access():
 async def setup_bot_commands():
     await Bot.set_bot_commands([
         BotCommand("start", "Start the bot / open file links"),
+        BotCommand("genlink", "Store a single message or file"),
+        BotCommand("batch", "Store multiple channel messages"),
+        BotCommand("custom_batch", "Store selected messages"),
+        BotCommand("shortener", "Shorten a shareable link"),
+        BotCommand("settings", "Customize bot settings"),
         BotCommand("clear_batch", "Clear your current batch"),
-        BotCommand("status", "Admin: show total users"),
+        BotCommand("special_link", "Moderator: create an editable link"),
+        BotCommand("universal_link", "Moderator: create a universal link"),
         BotCommand("broadcast", "Admin: broadcast a replied message"),
+        BotCommand("ban", "Moderator: ban a user"),
+        BotCommand("unban", "Moderator: unban a user"),
+        BotCommand("status", "Admin: show total users"),
         BotCommand("ban_user", "Admin: ban a user"),
         BotCommand("unban_user", "Admin: unban a user"),
         BotCommand("banned_users", "Admin: list banned users"),
-        BotCommand("settings", "Admin: bot settings"),
     ])
 
 
