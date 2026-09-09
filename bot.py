@@ -14,7 +14,7 @@ from handlers.add_user_to_db import add_user_to_database
 from handlers.send_file import send_media_and_reply
 from handlers.helpers import b64_to_str, str_to_b64
 from handlers.check_user_status import handle_user_status
-from handlers.force_sub_handler import handle_force_sub, get_invite_link
+from handlers.force_sub_handler import handle_force_sub
 from handlers.broadcast_handlers import main_broadcast_handler
 from handlers.save_media import save_media_in_channel, save_batch_media_in_channel
 
@@ -185,6 +185,28 @@ async def broadcast_handler_open(_, m: Message):
     await main_broadcast_handler(m, db)
 
 
+@Bot.on_message(filters.private & filters.command("settings") & filters.user(Config.BOT_OWNER))
+async def settings(_, m: Message):
+    delay = await db.get_auto_delete_seconds()
+    current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
+    await m.reply_text(
+        "**⚙️ HJ GROUPS BOT SETTINGS**\n\n"
+        f"**Auto-delete delivered files:** `{current}`\n\n"
+        "Choose how long a file delivered through a start/share link remains in the user's chat.\n"
+        "This setting is available to the bot owner only.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("5 min", callback_data="setdel_300"),
+             InlineKeyboardButton("15 min", callback_data="setdel_900"),
+             InlineKeyboardButton("30 min", callback_data="setdel_1800")],
+            [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),
+             InlineKeyboardButton("6 hours", callback_data="setdel_21600"),
+             InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
+            [InlineKeyboardButton("♾️ Disable", callback_data="setdel_0")],
+            [InlineKeyboardButton("Close", callback_data="closeMessage")]
+        ])
+    )
+
+
 @Bot.on_message(filters.private & filters.command("status") & filters.user(Config.BOT_OWNER))
 async def sts(_, m: Message):
     total_users = await db.total_users_count()
@@ -303,8 +325,7 @@ async def button(bot: Client, cmd: CallbackQuery):
 
     elif cb_data == "refreshForceSub":
         if Config.UPDATES_CHANNEL:
-            from handlers.force_sub_handler import handle_force_sub
-            result = await handle_force_sub(bot, cmd.message)
+            result = await handle_force_sub(bot, cmd.message, user_id=cmd.from_user.id)
             if result == 400:
                 return
         await cmd.message.edit(
@@ -358,6 +379,49 @@ async def button(bot: Client, cmd: CallbackQuery):
         await save_batch_media_in_channel(bot=bot, editable=cmd.message, message_ids=message_ids)
         MediaList[str(cmd.from_user.id)] = []
 
+    elif cb_data.startswith("setdel_"):
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
+            await cmd.answer("You are not allowed to change bot settings.", show_alert=True)
+            return
+        try:
+            seconds = int(cb_data.split("_", 1)[1])
+            await db.set_auto_delete_seconds(seconds)
+            label = "Disabled" if seconds == 0 else f"{seconds // 60} minute(s)"
+            await cmd.message.edit(
+                "**⚙️ HJ GROUPS BOT SETTINGS**\n\n"
+                f"**Auto-delete delivered files:** `{label}`\n\n"
+                "Setting saved successfully.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⚙️ Change Setting", callback_data="open_settings")],
+                    [InlineKeyboardButton("Close", callback_data="closeMessage")]
+                ])
+            )
+            await cmd.answer("Auto-delete setting saved.")
+        except Exception as err:
+            await cmd.answer(f"Could not save setting: {err}", show_alert=True)
+
+    elif cb_data == "open_settings":
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
+            await cmd.answer("You are not allowed to open bot settings.", show_alert=True)
+            return
+        delay = await db.get_auto_delete_seconds()
+        current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
+        await cmd.message.edit(
+            "**⚙️ HJ GROUPS BOT SETTINGS**\n\n"
+            f"**Auto-delete delivered files:** `{current}`\n\n"
+            "Choose how long a delivered file remains in the user's chat.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("5 min", callback_data="setdel_300"),
+                 InlineKeyboardButton("15 min", callback_data="setdel_900"),
+                 InlineKeyboardButton("30 min", callback_data="setdel_1800")],
+                [InlineKeyboardButton("1 hour", callback_data="setdel_3600"),
+                 InlineKeyboardButton("6 hours", callback_data="setdel_21600"),
+                 InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
+                [InlineKeyboardButton("♾️ Disable", callback_data="setdel_0")],
+                [InlineKeyboardButton("Close", callback_data="closeMessage")]
+            ])
+        )
+
     elif cb_data == "closeMessage":
         await cmd.message.delete(True)
 
@@ -376,6 +440,7 @@ async def setup_bot_commands():
         BotCommand("ban_user", "Admin: ban a user"),
         BotCommand("unban_user", "Admin: unban a user"),
         BotCommand("banned_users", "Admin: list banned users"),
+        BotCommand("settings", "Admin: bot settings"),
     ])
 
 
