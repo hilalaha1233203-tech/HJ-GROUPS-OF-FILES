@@ -9,6 +9,7 @@ from pyrogram import Client
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 from handlers.helpers import str_to_b64
+from handlers.database import db
 
 
 def generate_random_alphanumeric():
@@ -18,7 +19,6 @@ def generate_random_alphanumeric():
 
 
 def _user_can_save(user_id: int) -> bool:
-    """Empty allow-list means all users are allowed, matching normal FileStore behavior."""
     allowed_users = Config.OTHER_USERS_CAN_SAVE_FILE
     return int(user_id) == Config.BOT_OWNER or not allowed_users or int(user_id) in allowed_users
 
@@ -30,11 +30,7 @@ def get_short(url):
     try:
         rget = requests.get(
             f"https://{Config.SHORTLINK_URL}/api",
-            params={
-                "api": Config.SHORTLINK_API,
-                "url": url,
-                "alias": generate_random_alphanumeric(),
-            },
+            params={"api": Config.SHORTLINK_API, "url": url, "alias": generate_random_alphanumeric()},
             timeout=15,
         )
         rjson = rget.json()
@@ -45,9 +41,17 @@ def get_short(url):
     return url
 
 
+async def get_storage_channel_id():
+    channel_id = await db.get_db_channel_id()
+    if channel_id is None:
+        raise RuntimeError("Storage channel is not configured. Forward one message from your private storage channel to the bot first.")
+    return channel_id
+
+
 async def forward_to_channel(bot: Client, message: Message, editable: Message):
+    channel_id = await get_storage_channel_id()
     try:
-        return await message.forward(Config.DB_CHANNEL)
+        return await message.forward(channel_id)
     except FloodWait as sl:
         await asyncio.sleep(sl.value)
         if Config.LOG_CHANNEL:
@@ -56,9 +60,7 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
                     chat_id=int(Config.LOG_CHANNEL),
                     text=f"#FloodWait:\nGot FloodWait of `{str(sl.value)}s` from `{str(editable.chat.id)}` !!",
                     disable_web_page_preview=True,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Ban User", callback_data=f"ban_user_{str(editable.chat.id)}")]
-                    ])
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ban User", callback_data=f"ban_user_{str(editable.chat.id)}")]])
                 )
             except Exception:
                 pass
@@ -72,6 +74,7 @@ async def save_batch_media_in_channel(bot: Client, editable: Message, message_id
             await editable.reply_text("You are not authorized to save files.")
             return
 
+        channel_id = await get_storage_channel_id()
         message_ids_str = ""
         for message_id in message_ids:
             message = await bot.get_messages(chat_id=editable.chat.id, message_ids=message_id)
@@ -86,50 +89,24 @@ async def save_batch_media_in_channel(bot: Client, editable: Message, message_id
             return
 
         SaveMessage = await bot.send_message(
-            chat_id=Config.DB_CHANNEL,
+            chat_id=channel_id,
             text=message_ids_str.strip(),
             disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Delete Batch", callback_data="closeMessage")
-            ]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Delete Batch", callback_data="closeMessage")]])
         )
         share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(str(SaveMessage.id))}"
         short_link = get_short(share_link)
-
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
             buttons[0].append(InlineKeyboardButton("Short Link", url=short_link))
 
         await editable.edit(
-            f"**Batch Files Stored in my Database!**\n\nHere is the Permanent Link of your files: {short_link}\n\n"
-            "Just Click the link to get your files!",
+            f"**Batch Files Stored in my Database!**\n\nHere is the Permanent Link of your files: {short_link}\n\nJust Click the link to get your files!",
             reply_markup=InlineKeyboardMarkup(buttons),
             disable_web_page_preview=True
         )
-        if Config.LOG_CHANNEL:
-            try:
-                await bot.send_message(
-                    chat_id=int(Config.LOG_CHANNEL),
-                    text=f"#BATCH_SAVE:\n\n[{source_user.first_name}](tg://user?id={source_user.id}) Got Batch Link!",
-                    disable_web_page_preview=True,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open Link", url=short_link)]])
-                )
-            except Exception:
-                pass
     except Exception as err:
         await editable.edit(f"Something Went Wrong!\n\n**Error:** `{err}`")
-        if Config.LOG_CHANNEL:
-            try:
-                await bot.send_message(
-                    chat_id=int(Config.LOG_CHANNEL),
-                    text=f"#ERROR_TRACEBACK:\nGot Error from `{str(editable.chat.id)}` !!\n\n**Traceback:** `{err}`",
-                    disable_web_page_preview=True,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Ban User", callback_data=f"ban_user_{str(editable.chat.id)}")]
-                    ])
-                )
-            except Exception:
-                pass
 
 
 async def save_media_in_channel(bot: Client, editable: Message, message: Message):
@@ -138,7 +115,8 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
             await editable.reply_text("You are not authorized to save files.")
             return
 
-        forwarded_msg = await message.forward(Config.DB_CHANNEL)
+        channel_id = await get_storage_channel_id()
+        forwarded_msg = await message.forward(channel_id)
         file_er_id = str(forwarded_msg.id)
         if Config.LOG_CHANNEL:
             try:
@@ -164,33 +142,6 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
         )
     except FloodWait as sl:
         await asyncio.sleep(sl.value)
-        if Config.LOG_CHANNEL:
-            try:
-                await bot.send_message(
-                    chat_id=int(Config.LOG_CHANNEL),
-                    text="#FloodWait:\n"
-                         f"Got FloodWait of `{str(sl.value)}s` from `{str(editable.chat.id)}` !!",
-                    disable_web_page_preview=True,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Ban User", callback_data=f"ban_user_{str(editable.chat.id)}")]
-                    ])
-                )
-            except Exception:
-                pass
         await save_media_in_channel(bot, editable, message)
     except Exception as err:
         await editable.edit(f"Something Went Wrong!\n\n**Error:** `{err}`")
-        if Config.LOG_CHANNEL:
-            try:
-                await bot.send_message(
-                    chat_id=int(Config.LOG_CHANNEL),
-                    text="#ERROR_TRACEBACK:\n"
-                         f"Got Error from `{str(editable.chat.id)}` !!\n\n"
-                         f"**Traceback:** `{err}`",
-                    disable_web_page_preview=True,
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Ban User", callback_data=f"ban_user_{str(editable.chat.id)}")]
-                    ])
-                )
-            except Exception:
-                pass
