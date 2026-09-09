@@ -13,7 +13,6 @@ from handlers.database import db
 
 
 def generate_random_alphanumeric():
-    """Generate a random 8-character alphanumeric string."""
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for _ in range(8))
 
@@ -24,7 +23,6 @@ def _user_can_save(user_id: int) -> bool:
 
 
 def get_short(url):
-    """Shorten the link when configured; otherwise safely return the original link."""
     if not Config.SHORTLINK_URL or not Config.SHORTLINK_API:
         return url
     try:
@@ -54,16 +52,6 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
         return await message.forward(channel_id)
     except FloodWait as sl:
         await asyncio.sleep(sl.value)
-        if Config.LOG_CHANNEL:
-            try:
-                await bot.send_message(
-                    chat_id=int(Config.LOG_CHANNEL),
-                    text=f"#FloodWait:\nGot FloodWait of `{str(sl.value)}s` from `{str(editable.chat.id)}` !!",
-                    disable_web_page_preview=True,
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Ban User", callback_data=f"ban_user_{str(editable.chat.id)}")]])
-                )
-            except Exception:
-                pass
         return await forward_to_channel(bot, message, editable)
 
 
@@ -88,13 +76,14 @@ async def save_batch_media_in_channel(bot: Client, editable: Message, message_id
             await editable.edit("No files were available to save in this batch.")
             return
 
-        SaveMessage = await bot.send_message(
+        save_message = await bot.send_message(
             chat_id=channel_id,
             text=message_ids_str.strip(),
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Delete Batch", callback_data="closeMessage")]])
         )
-        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f"{channel_id}|{SaveMessage.id}")}"
+        payload = f"{channel_id}|{save_message.id}"
+        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(payload)}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
@@ -127,7 +116,8 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
             except Exception:
                 pass
 
-        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f"{channel_id}|{file_er_id}")}"
+        payload = f"{channel_id}|{file_er_id}"
+        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(payload)}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
