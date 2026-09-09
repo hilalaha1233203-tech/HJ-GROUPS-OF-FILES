@@ -53,22 +53,18 @@ def parse_db_message_link(text: str):
 
     match = re.search(r"https?://(?:t\.me|telegram\.me)/([A-Za-z0-9_]+)/([0-9]+)", text, flags=re.I)
     if match and Config.BOT_USERNAME:
-        # Public username links are not valid DB references unless the configured DB_CHANNEL
-        # itself uses that username. Resolve it through Telegram before accepting the link.
         return ("@" + match.group(1), int(match.group(2)))
     return None
 
 
 async def resolve_existing_db_message(bot: Client, message: Message):
     """Resolve an already-stored DB-channel message from a forwarded message or Telegram link."""
-    # Forwarded message from the configured private DB channel.
     forwarded_chat = getattr(message, "forward_from_chat", None)
     forwarded_message_id = getattr(message, "forward_from_message_id", None)
     if forwarded_chat is not None and forwarded_message_id:
         if int(forwarded_chat.id) == int(Config.DB_CHANNEL):
             return int(forwarded_message_id)
 
-    # Pasted / shared Telegram message link.
     parsed = parse_db_message_link(message.text or message.caption or "")
     if isinstance(parsed, int):
         return parsed
@@ -167,7 +163,6 @@ async def main(bot: Client, message: Message):
             )
             return
 
-        # Reuse an already-stored DB-channel message instead of uploading it again.
         try:
             existing_message_id = await resolve_existing_db_message(bot, message)
             if existing_message_id is not None:
@@ -181,7 +176,6 @@ async def main(bot: Client, message: Message):
             )
             return
 
-        # A plain message-link to another chat is not accepted as a DB reference.
         if message.text and ("t.me/" in message.text.lower() or "telegram.me/" in message.text.lower()):
             await message.reply_text(
                 "That message link is not from the configured Database Channel.\n\n"
@@ -540,6 +534,26 @@ async def button(bot: Client, cmd: CallbackQuery):
         pass
 
 
+async def validate_db_channel_access():
+    """Resolve the DB channel at startup so private-channel peer problems are detected early."""
+    try:
+        chat = await Bot.get_chat(Config.DB_CHANNEL)
+        print(
+            f"[DB_CHANNEL] Connected: id={chat.id} title={getattr(chat, 'title', '')!r}"
+        )
+        return True
+    except Exception as err:
+        print(
+            "[DB_CHANNEL] ERROR: Unable to access the configured Database Channel "
+            f"{Config.DB_CHANNEL}: {err}"
+        )
+        print(
+            "[DB_CHANNEL] The bot must be a member/admin of that private channel "
+            "and the DB_CHANNEL value must be the correct -100... channel ID."
+        )
+        return False
+
+
 async def setup_bot_commands():
     await Bot.set_bot_commands([
         BotCommand("start", "Start the bot / open file links"),
@@ -555,6 +569,7 @@ async def setup_bot_commands():
 
 async def run_bot():
     await Bot.start()
+    await validate_db_channel_access()
     await setup_bot_commands()
     print(f"[{Config.BOT_USERNAME}] Bot started successfully")
     await idle()
