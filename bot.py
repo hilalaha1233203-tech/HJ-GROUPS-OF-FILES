@@ -30,7 +30,6 @@ Bot = Client(
 
 
 def make_share_link(message_id: int, channel_id=None) -> str:
-    """New links carry channel+message; legacy message-only links remain supported."""
     payload = str(int(message_id)) if channel_id is None else f"{int(channel_id)}|{int(message_id)}"
     token = str_to_b64(payload)
     return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"
@@ -692,7 +691,6 @@ async def validate_db_channel_access():
 
 
 async def recover_storage_channels():
-    """Re-discover accessible storage channels after a Voroa restart."""
     try:
         stored = await db.get_storage_channels()
     except Exception as err:
@@ -741,8 +739,8 @@ async def setup_bot_commands():
 
 async def run_bot():
     await Bot.start()
-    await recover_storage_channels()
     await validate_db_channel_access()
+    await recover_storage_channels()
     await setup_bot_commands()
     print(f"[{Config.BOT_USERNAME}] Bot started successfully")
     await idle()
