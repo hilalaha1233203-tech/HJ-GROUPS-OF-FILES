@@ -10,7 +10,8 @@ from binascii import (
 from pyrogram import (
     Client,
     enums,
-    filters
+    filters,
+    idle
 )
 from pyrogram.errors import (
     UserNotParticipant,
@@ -93,7 +94,7 @@ async def start(bot: Client, cmd: Message):
             message_ids = []
             if GetMessage.text:
                 message_ids = GetMessage.text.split(" ")
-                _response_msg = await cmd.reply_text(
+                await cmd.reply_text(
                     text=f"**Total Files:** `{len(message_ids)}`",
                     quote=True,
                     disable_web_page_preview=True
@@ -119,7 +120,7 @@ async def main(bot: Client, message: Message):
                 return
 
         if message.from_user.id in Config.BANNED_USERS:
-            await message.reply_text("Sorry, You are banned!\n\nContact my [Support Group](https://t.me/TeleRoid14)",
+            await message.reply_text("Sorry, You are banned!\n\nContact support group for help.",
                                      disable_web_page_preview=True)
             return
 
@@ -141,8 +142,6 @@ async def main(bot: Client, message: Message):
         elif int(message.chat.id) in Config.BANNED_CHAT_IDS:
             await bot.leave_chat(message.chat.id)
             return
-        else:
-            pass
 
         try:
             forwarded_msg = await message.forward(Config.DB_CHANNEL)
@@ -198,18 +197,12 @@ async def sts(_, m: Message):
 
 @Bot.on_message(filters.private & filters.command("ban_user") & filters.user(Config.BOT_OWNER))
 async def ban(c: Client, m: Message):
-    
     if len(m.command) == 1:
         await m.reply_text(
-            f"Use this command to ban any user from the bot.\n\n"
-            f"Usage:\n\n"
-            f"`/ban_user user_id ban_duration ban_reason`\n\n"
-            f"Eg: `/ban_user 1234567 28 You misused me.`\n"
-            f"This will ban user with id `1234567` for `28` days for the reason `You misused me`.",
+            "Use: `/ban_user user_id ban_duration ban_reason`",
             quote=True
         )
         return
-
     try:
         user_id = int(m.command[1])
         ban_duration = int(m.command[2])
@@ -218,59 +211,15 @@ async def ban(c: Client, m: Message):
         try:
             await c.send_message(
                 user_id,
-                f"You are banned to use this bot for **{ban_duration}** day(s) for the reason __{ban_reason}__ \n\n"
-                f"**Message from the admin**"
+                f"You are banned to use this bot for **{ban_duration}** day(s) for the reason __{ban_reason}__\n\n**Message from the admin**"
             )
             ban_log_text += '\n\nUser notified successfully!'
         except:
             traceback.print_exc()
-            ban_log_text += f"\n\nUser notification failed! \n\n`{traceback.format_exc()}`"
-
+            ban_log_text += f"\n\nUser notification failed!\n\n`{traceback.format_exc()}`"
         await db.ban_user(user_id, ban_duration, ban_reason)
         print(ban_log_text)
-        await m.reply_text(
-            ban_log_text,
-            quote=True
-        )
-    except:
-        traceback.print_exc()
-        await m.reply_text(
-            f"Error occoured! Traceback given below\n\n`{traceback.format_exc()}`",
-            quote=True
-        )
-
-
-@Bot.on_message(filters.private & filters.command("unban_user") & filters.user(Config.BOT_OWNER))
-async def unban(c: Client, m: Message):
-
-    if len(m.command) == 1:
-        await m.reply_text(
-            f"Use this command to unban any user.\n\n"
-            f"Usage:\n\n`/unban_user user_id`\n\n"
-            f"Eg: `/unban_user 1234567`\n"
-            f"This will unban user with id `1234567`.",
-            quote=True
-        )
-        return
-
-    try:
-        user_id = int(m.command[1])
-        unban_log_text = f"Unbanning user {user_id}"
-        try:
-            await c.send_message(
-                user_id,
-                f"Your ban was lifted!"
-            )
-            unban_log_text += '\n\nUser notified successfully!'
-        except:
-            traceback.print_exc()
-            unban_log_text += f"\n\nUser notification failed! \n\n`{traceback.format_exc()}`"
-        await db.remove_ban(user_id)
-        print(unban_log_text)
-        await m.reply_text(
-            unban_log_text,
-            quote=True
-        )
+        await m.reply_text(ban_log_text, quote=True)
     except:
         traceback.print_exc()
         await m.reply_text(
@@ -279,21 +228,39 @@ async def unban(c: Client, m: Message):
         )
 
 
+@Bot.on_message(filters.private & filters.command("unban_user") & filters.user(Config.BOT_OWNER))
+async def unban(c: Client, m: Message):
+    if len(m.command) == 1:
+        await m.reply_text("Use: `/unban_user user_id`", quote=True)
+        return
+    try:
+        user_id = int(m.command[1])
+        unban_log_text = f"Unbanning user {user_id}"
+        try:
+            await c.send_message(user_id, "Your ban was lifted!")
+            unban_log_text += '\n\nUser notified successfully!'
+        except:
+            traceback.print_exc()
+            unban_log_text += f"\n\nUser notification failed!\n\n`{traceback.format_exc()}`"
+        await db.remove_ban(user_id)
+        await m.reply_text(unban_log_text, quote=True)
+    except:
+        traceback.print_exc()
+        await m.reply_text(f"Error occurred! Traceback given below\n\n`{traceback.format_exc()}`", quote=True)
+
+
 @Bot.on_message(filters.private & filters.command("banned_users") & filters.user(Config.BOT_OWNER))
 async def _banned_users(_, m: Message):
-    
     all_banned_users = await db.get_all_banned_users()
     banned_usr_count = 0
     text = ''
-
     async for banned_user in all_banned_users:
         user_id = banned_user['id']
         ban_duration = banned_user['ban_status']['ban_duration']
         banned_on = banned_user['ban_status']['banned_on']
         ban_reason = banned_user['ban_status']['ban_reason']
         banned_usr_count += 1
-        text += f"> **user_id**: `{user_id}`, **Ban Duration**: `{ban_duration}`, " \
-                f"**Banned on**: `{banned_on}`, **Reason**: `{ban_reason}`\n\n"
+        text += f"> **user_id**: `{user_id}`, **Ban Duration**: `{ban_duration}`, **Banned on**: `{banned_on}`, **Reason**: `{ban_reason}`\n\n"
     reply_text = f"Total banned user(s): `{banned_usr_count}`\n\n{text}"
     if len(reply_text) > 4096:
         with open('banned-users.txt', 'w') as f:
@@ -312,106 +279,57 @@ async def clear_user_batch(bot: Client, m: Message):
 
 @Bot.on_callback_query()
 async def button(bot: Client, cmd: CallbackQuery):
-
     cb_data = cmd.data
     if "aboutbot" in cb_data:
         await cmd.message.edit(
             Config.ABOUT_BOT_TEXT,
             disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("Go Home", callback_data="gotohome"),
-                        InlineKeyboardButton("About Dev", callback_data="aboutdevs")
-                    ]
-                ]
-            )
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Home", callback_data="gotohome"), InlineKeyboardButton("About Dev", callback_data="aboutdevs")]])
         )
-
     elif "aboutdevs" in cb_data:
         await cmd.message.edit(
             Config.ABOUT_DEV_TEXT,
             disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("About Bot", callback_data="aboutbot"),
-                        InlineKeyboardButton("Go Home", callback_data="gotohome")
-                    ]
-                ]
-            )
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("About Bot", callback_data="aboutbot"), InlineKeyboardButton("Go Home", callback_data="gotohome")]])
         )
-
     elif "gotohome" in cb_data:
         await cmd.message.edit(
             Config.HOME_TEXT.format(cmd.message.chat.first_name, cmd.message.chat.id),
             disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("About Bot", callback_data="aboutbot"),
-                        InlineKeyboardButton("About Dev", callback_data="aboutdevs"),
-                        InlineKeyboardButton("Close 🚪", callback_data="closeMessage")
-                    ]
-                ]
-            )
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("About Bot", callback_data="aboutbot"), InlineKeyboardButton("About Dev", callback_data="aboutdevs"), InlineKeyboardButton("Close 🚪", callback_data="closeMessage")]])
         )
-
     elif "refreshForceSub" in cb_data:
         if Config.UPDATES_CHANNEL:
-            if Config.UPDATES_CHANNEL.startswith("-100"):
-                channel_chat_id = int(Config.UPDATES_CHANNEL)
-            else:
-                channel_chat_id = Config.UPDATES_CHANNEL
+            channel_chat_id = int(Config.UPDATES_CHANNEL) if Config.UPDATES_CHANNEL.startswith("-100") else Config.UPDATES_CHANNEL
             try:
                 user = await bot.get_chat_member(channel_chat_id, cmd.message.chat.id)
                 if user.status == "kicked":
-                    await cmd.message.edit(
-                        text="Sorry Sir, You are Banned to use me.",
-                        disable_web_page_preview=True
-                    )
+                    await cmd.message.edit("Sorry, you are banned from using this bot.")
                     return
             except UserNotParticipant:
                 invite_link = await get_invite_link(channel_chat_id)
                 await cmd.message.edit(
-                    text="**Please join the Updates Channel to use this Bot.**\n\n",
-                    reply_markup=InlineKeyboardMarkup(
-                        [
-                            [
-                                InlineKeyboardButton("🤖 Join Updates Channel", url=invite_link.invite_link)
-                            ],
-                            [
-                                InlineKeyboardButton("🔄 Refresh", callback_data="refreshForceSub")
-                            ]
-                        ]
-                    )
+                    "**Please join the Updates Channel to use this Bot.**",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🤖 Join Updates Channel", url=invite_link.invite_link)],
+                        [InlineKeyboardButton("🔄 Refresh", callback_data="refreshForceSub")]
+                    ])
                 )
                 return
             except Exception:
-                await cmd.message.edit(
-                    text="Something went wrong. Please try again later.",
-                    disable_web_page_preview=True
-                )
+                await cmd.message.edit("Something went wrong. Please try again later.")
                 return
         await cmd.message.edit(
-            text=Config.HOME_TEXT.format(cmd.message.chat.first_name, cmd.message.chat.id),
+            Config.HOME_TEXT.format(cmd.message.chat.first_name, cmd.message.chat.id),
             disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton("About Bot", callback_data="aboutbot"),
-                        InlineKeyboardButton("About Dev", callback_data="aboutdevs")
-                    ]
-                ]
-            )
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("About Bot", callback_data="aboutbot"), InlineKeyboardButton("About Dev", callback_data="aboutdevs")]])
         )
-
     elif cb_data.startswith("ban_user_"):
         user_id = cb_data.split("_", 2)[-1]
-        if Config.UPDATES_CHANNEL is None:
-            await cmd.answer("Sorry Sir, You didn't Set any Updates Channel!", show_alert=True)
+        if not Config.UPDATES_CHANNEL:
+            await cmd.answer("No Updates Channel configured.", show_alert=True)
             return
-        if not int(cmd.from_user.id) == Config.BOT_OWNER:
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
             await cmd.answer("You are not allowed to do that!", show_alert=True)
             return
         try:
@@ -419,34 +337,30 @@ async def button(bot: Client, cmd: CallbackQuery):
             await cmd.answer("User Banned from Updates Channel!", show_alert=True)
         except Exception as e:
             await cmd.answer(f"Can't Ban Him!\n\nError: {e}", show_alert=True)
-
     elif "addToBatchTrue" in cb_data:
-        if MediaList.get(f"{str(cmd.from_user.id)}", None) is None:
-            MediaList[f"{str(cmd.from_user.id)}"] = []
+        if MediaList.get(str(cmd.from_user.id)) is None:
+            MediaList[str(cmd.from_user.id)] = []
         file_id = cmd.message.reply_to_message.id
-        MediaList[f"{str(cmd.from_user.id)}"].append(file_id)
-        await cmd.message.edit("File Saved in Batch!\n\n"
-                               "Press below button to get batch link.",
-                               reply_markup=InlineKeyboardMarkup([
-                                   [InlineKeyboardButton("Get Batch Link", callback_data="getBatchLink")],
-                                   [InlineKeyboardButton("Close Message", callback_data="closeMessage")]
-                               ]))
-
+        MediaList[str(cmd.from_user.id)].append(file_id)
+        await cmd.message.edit(
+            "File Saved in Batch!\n\nPress below button to get batch link.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Get Batch Link", callback_data="getBatchLink")],
+                [InlineKeyboardButton("Close Message", callback_data="closeMessage")]
+            ])
+        )
     elif "addToBatchFalse" in cb_data:
         await save_media_in_channel(bot, editable=cmd.message, message=cmd.message.reply_to_message)
-
     elif "getBatchLink" in cb_data:
-        message_ids = MediaList.get(f"{str(cmd.from_user.id)}", None)
+        message_ids = MediaList.get(str(cmd.from_user.id))
         if message_ids is None:
             await cmd.answer("Batch List Empty!", show_alert=True)
             return
         await cmd.message.edit("Please wait, generating batch link ...")
         await save_batch_media_in_channel(bot=bot, editable=cmd.message, message_ids=message_ids)
-        MediaList[f"{str(cmd.from_user.id)}"] = []
-
+        MediaList[str(cmd.from_user.id)] = []
     elif "closeMessage" in cb_data:
         await cmd.message.delete(True)
-
     try:
         await cmd.answer()
     except QueryIdInvalid:
@@ -454,26 +368,33 @@ async def button(bot: Client, cmd: CallbackQuery):
 
 
 async def setup_bot_commands():
-    commands = [
+    await Bot.set_bot_commands([
         BotCommand("start", "Start the bot"),
-        BotCommand("clear_batch", "Clear your batch files"),
+        BotCommand("clear_batch", "Clear batch files"),
         BotCommand("status", "Show total users"),
         BotCommand("broadcast", "Broadcast a replied message"),
         BotCommand("ban_user", "Ban a user"),
         BotCommand("unban_user", "Unban a user"),
         BotCommand("banned_users", "List banned users"),
-    ]
-    await Bot.set_bot_commands(commands)
+    ])
+
+
+async def run_bot():
+    await Bot.start()
+    await setup_bot_commands()
+    print(f"[{Config.BOT_USERNAME}] Bot started successfully")
+    await idle()
+    await Bot.stop()
 
 
 if __name__ == "__main__":
     while True:
         try:
-            Bot.run(setup_bot_commands())
+            Bot.run(run_bot())
             break
         except FloodWait as e:
-            wait_seconds = max(int(e.value), 30)
-            print(f"[{Config.BOT_USERNAME}] Telegram FloodWait during bot authorization. Waiting {wait_seconds} seconds before retry.")
+            wait_seconds = max(int(e.value), 60)
+            print(f"[{Config.BOT_USERNAME}] Telegram FloodWait during authorization. Waiting {wait_seconds} seconds before retry.")
             time.sleep(wait_seconds)
         except Exception:
             raise
