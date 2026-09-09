@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   patch:
-    if: !contains(github.event.head_commit.message, '[settings-auto-fix]')
+    if: ${{ !contains(github.event.head_commit.message, '[settings-auto-fix]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,6 @@ jobs:
           p = Path('bot.py')
           s = p.read_text(encoding='utf-8')
 
-          # Force Subscribe is intentionally disabled for HJ GROUPS OF FILES.
           s = s.replace('''    if Config.UPDATES_CHANNEL is not None:\n        back = await handle_force_sub(bot, cmd)\n        if back == 400:\n            return\n\n''', '')
           s = s.replace('''        if Config.UPDATES_CHANNEL is not None:\n            back = await handle_force_sub(bot, message)\n            if back == 400:\n                return\n\n''', '')
 
