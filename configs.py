@@ -8,7 +8,11 @@ class Config(object):
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
     BOT_USERNAME = os.environ.get("BOT_USERNAME")
-    DB_CHANNEL = int(os.environ.get("DB_CHANNEL", "-100"))
+    # Optional bootstrap value. The bot can learn the storage channel automatically.
+    DB_CHANNEL = os.environ.get("DB_CHANNEL")
+    if DB_CHANNEL:
+        DB_CHANNEL = int(DB_CHANNEL)
+
     SHORTLINK_URL = os.environ.get("SHORTLINK_URL")
     SHORTLINK_API = os.environ.get("SHORTLINK_API")
     BOT_OWNER = int(os.environ.get("BOT_OWNER", "0"))
@@ -20,15 +24,12 @@ class Config(object):
         or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
         or os.environ.get("SUPABASE_KEY")
     )
-    # Compatibility alias for older upstream imports.
     DATABASE_URL = SUPABASE_URL
 
     # Optional channel settings. Blank means disabled.
     UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL") or None
     LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None
 
-    # Empty means all users are allowed to save files.
-    # When IDs are supplied, only those users can use the save buttons.
     OTHER_USERS_CAN_SAVE_FILE = [
         int(user_id)
         for user_id in os.environ.get("OTHER_USERS_CAN_SAVE_FILE", "").split(",")
