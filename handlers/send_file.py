@@ -50,7 +50,7 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
         )
     except FloodWait as e:
         await asyncio.sleep(e.value)
-        return await media_forward(bot, user_id, file_id)
+        return await media_forward(bot, user_id, file_id, channel_id)
 
 
 async def delete_after_delay(message, delay):
