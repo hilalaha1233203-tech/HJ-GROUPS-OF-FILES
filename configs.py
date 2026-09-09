@@ -17,6 +17,9 @@ class Config(object):
 		or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 		or os.environ.get("SUPABASE_KEY")
 	)
+	# Backward-compatible alias for older handlers/deployments.
+	# The Supabase database adapter ignores this value and uses SUPABASE_URL/SUPABASE_KEY.
+	DATABASE_URL = SUPABASE_URL
 	UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL", "")
 	LOG_CHANNEL = os.environ.get("LOG_CHANNEL", None)
 	BANNED_USERS = set(int(x) for x in os.environ.get("BANNED_USERS", "1234567890").split())
@@ -39,11 +42,8 @@ Send Me any Media or File. I can Work In Channel too. Add Me to Channel with Edi
 ├🔹 **Hosted On:** [Heroku](https://heroku.com)
 │
 ├🔸 **Developer:** [Predator HackerZz](https://t.me/OwnYourBotz) 
-│
 ├🔹 **Bot Support:** [Support Group](https://t.me/TeleRoid14)
-│
 ├🔸 **Bot Updates:** [Bots Channel](https://t.me/TeleRoidGroup)
-│
 ╰──────[ 😎 ]───────────⍟
 """
 	ABOUT_DEV_TEXT = f"""
