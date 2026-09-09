@@ -1,0 +1,81 @@
+name: Repair and complete FileStore
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore known-good bot and apply fixes
+        shell: bash
+        run: |
+          set -e
+          git checkout 73865cdbd7b06cc9e09c36f6e98537d0e3abb4af -- bot.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('bot.py')
+          s=p.read_text()
+          s=s.replace('def make_share_link(message_id: int) -> str:\n    token = str_to_b64(str(int(message_id)))\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"', '''def make_share_link(message_id: int, channel_id=None) -> str:\n    """New links carry channel+message; legacy message-only links remain supported."""\n    payload = str(int(message_id)) if channel_id is None else f"{int(channel_id)}|{int(message_id)}"\n    token = str_to_b64(payload)\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"''')
+          s=s.replace('share_link = make_share_link(int(db_message.id))', 'share_link = make_share_link(int(db_message.id), channel_id)')
+          old='''        try:\n            file_id = int(b64_to_str(usr_cmd).split("_")[-1])\n        except (Error, UnicodeDecodeError):\n            file_id = int(usr_cmd.split("_")[-1])\n\n        channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)'''
+          new='''        try:\n            decoded = b64_to_str(usr_cmd)\n            if "|" in decoded:\n                channel_part, message_part = decoded.split("|", 1)\n                channel_id = int(channel_part)\n                file_id = int(message_part)\n            else:\n                channel_id = None\n                file_id = int(decoded.split("_")[-1])\n        except (Error, UnicodeDecodeError, ValueError):\n            raw = usr_cmd.split("_")[-1]\n            if "|" in raw:\n                channel_part, message_part = raw.split("|", 1)\n                channel_id = int(channel_part)\n                file_id = int(message_part)\n            else:\n                channel_id = None\n                file_id = int(raw)\n\n        if channel_id is None:\n            channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)'''
+          if old not in s: raise SystemExit('start block not found')
+          s=s.replace(old,new)
+          s=s.replace('await send_media_and_reply(bot, user_id=cmd.from_user.id, file_id=int(message_id))','await send_media_and_reply(bot, user_id=cmd.from_user.id, file_id=int(message_id), channel_id=channel_id)')
+          marker='@Bot.on_message(filters.private & filters.command("broadcast") & filters.user(Config.BOT_OWNER) & filters.reply)'
+          handlers='''async def _reply_saved_link(bot, m):\n    if not m.reply_to_message:\n        await m.reply_text("Reply to a file/media/message and use this command.")\n        return\n    status = await m.reply_text("⏳ Saving...")\n    await save_media_in_channel(bot, status, m.reply_to_message)\n\n\n@Bot.on_message(filters.private & filters.command("genlink"))\nasync def genlink(bot, m):\n    await _reply_saved_link(bot, m)\n\n\n@Bot.on_message(filters.private & filters.command("batch"))\nasync def batch(bot, m):\n    if not m.reply_to_message or len(m.command) < 3:\n        await m.reply_text("Usage: reply to a channel message and use `/batch start_id end_id`.")\n        return\n    try:\n        ids = list(range(int(m.command[1]), int(m.command[2]) + 1))\n    except ValueError:\n        await m.reply_text("Batch message IDs must be numbers.")\n        return\n    status = await m.reply_text(f"⏳ Saving {len(ids)} messages...")\n    await save_batch_media_in_channel(bot, status, ids)\n\n\n@Bot.on_message(filters.private & filters.command("custom_batch"))\nasync def custom_batch(bot, m):\n    if not m.reply_to_message or len(m.command) < 2:\n        await m.reply_text("Usage: reply to a channel message and use `/custom_batch 101 105 110`.")\n        return\n    try:\n        ids = [int(x) for x in m.command[1:]]\n    except ValueError:\n        await m.reply_text("Message IDs must be numbers.")\n        return\n    status = await m.reply_text(f"⏳ Saving {len(ids)} selected messages...")\n    await save_batch_media_in_channel(bot, status, ids)\n\n\n@Bot.on_message(filters.private & filters.command("shortener"))\nasync def shortener(bot, m):\n    url = " ".join(m.command[1:]).strip()\n    if not url and m.reply_to_message:\n        url = (m.reply_to_message.text or m.reply_to_message.caption or "").strip()\n    if not url:\n        await m.reply_text("Usage: `/shortener https://example.com/link`")\n        return\n    short = get_short(url)\n    await m.reply_text(f"🔗 **Shortened Link:**\\n{short}", disable_web_page_preview=True)\n\n\n@Bot.on_message(filters.private & filters.command("special_link"))\nasync def special_link(bot, m):\n    await batch(bot, m)\n\n\n@Bot.on_message(filters.private & filters.command("universal_link"))\nasync def universal_link(bot, m):\n    await batch(bot, m)\n\n\n@Bot.on_message(filters.private & filters.command("ban"))\nasync def ban_alias(bot, m):\n    if int(m.from_user.id) != int(Config.BOT_OWNER):\n        await m.reply_text("⛔ Owner/Admin Only")\n        return\n    if len(m.command) < 4:\n        await m.reply_text("Usage: `/ban user_id days reason`")\n        return\n    await db.ban_user(int(m.command[1]), int(m.command[2]), " ".join(m.command[3:]))\n    await m.reply_text("✅ User banned.")\n\n\n@Bot.on_message(filters.private & filters.command("unban"))\nasync def unban_alias(bot, m):\n    if int(m.from_user.id) != int(Config.BOT_OWNER):\n        await m.reply_text("⛔ Owner/Admin Only")\n        return\n    if len(m.command) < 2:\n        await m.reply_text("Usage: `/unban user_id`")\n        return\n    await db.remove_ban(int(m.command[1]))\n    await m.reply_text("✅ User unbanned.")\n\n\n'''
+          if marker not in s: raise SystemExit('handler marker not found')
+          s=s.replace(marker, handlers+marker, 1)
+          marker2='async def setup_bot_commands():'
+          recovery='''async def recover_storage_channels():\n    """Re-discover accessible storage channels after a Voroa restart."""\n    try:\n        stored = await db.get_storage_channels()\n    except Exception as err:\n        print(f"Storage settings read failed: {err}")\n        stored = []\n    if Config.DB_CHANNEL:\n        stored.append(int(Config.DB_CHANNEL))\n    seen=[]\n    for cid in stored:\n        if cid in seen:\n            continue\n        try:\n            chat = await Bot.get_chat(int(cid))\n            if chat.type in (enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP):\n                seen.append(int(chat.id))\n        except Exception as err:\n            print(f"Storage channel {cid} unavailable: {err}")\n    if seen:\n        try:\n            await db.set_storage_channels(seen)\n        except Exception as err:\n            print(f"Storage channel persistence failed: {err}")\n    return seen\n\n\n'''
+          if marker2 not in s: raise SystemExit('setup marker not found')
+          s=s.replace(marker2,recovery+marker2,1)
+          p.write_text(s)
+          PY
+          python3 -m py_compile bot.py
+      - name: Update delivery and saved links
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('handlers/send_file.py'); s=p.read_text()
+          s=s.replace('async def media_forward(bot: Client, user_id: int, file_id: int):','async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None):')
+          s=s.replace('channel_id = await db.get_db_channel_id()','channel_id = channel_id or await db.get_db_channel_id()',1)
+          s=s.replace('async def send_media_and_reply(bot: Client, user_id: int, file_id: int):\n    sent_message = await media_forward(bot, user_id, file_id)','async def send_media_and_reply(bot: Client, user_id: int, file_id: int, channel_id=None):\n    sent_message = await media_forward(bot, user_id, file_id, channel_id)')
+          p.write_text(s)
+          p=Path('handlers/save_media.py'); s=p.read_text()
+          s=s.replace('share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(str(SaveMessage.id))}"','share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f\"{channel_id}|{SaveMessage.id}\")}"')
+          s=s.replace('share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(file_er_id)}"','share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f\"{channel_id}|{file_er_id}\")}"')
+          p.write_text(s)
+          PY
+          python3 -m py_compile bot.py handlers/send_file.py handlers/save_media.py handlers/database.py configs.py
+      - name: Initialize storage recovery at startup
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('bot.py'); s=p.read_text()
+          if 'await recover_storage_channels()' not in s:
+              idx=s.rfind('Bot.start()')
+              if idx == -1:
+                  raise SystemExit('Bot.start() not found')
+              line_end=s.find('\n',idx)
+              s=s[:line_end+1]+'    await recover_storage_channels()\n'+s[line_end+1:]
+          p.write_text(s)
+          PY
+          python3 -m py_compile bot.py
+      - name: Commit repaired source
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add bot.py handlers/send_file.py handlers/save_media.py
+          git diff --cached --quiet && exit 0
+          git commit -m "Repair storage persistence, legacy links and commands"
+          git push origin HEAD:main
