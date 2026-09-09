@@ -58,7 +58,7 @@ Permanent Telegram FileStore Bot.
 🔐 Supabase is used for user/status records.
 ☁️ Files remain stored in the configured Telegram DB channel.
 
-Supports private file saving, batch mode, channel mode, force subscribe, short links, broadcasts and admin user controls.
+Supports private file saving, batch mode, channel mode, short links, broadcasts and admin user controls.
 """
 
     HOME_TEXT = """
@@ -93,7 +93,6 @@ Use **Commands** to view all available commands and features.
 • Private file saving with permanent share links
 • Batch file saving and batch links
 • Channel file storage mode
-• Force subscribe
 • Optional URL shortener
 • Supabase user/status database
 • Telegram DB channel file storage
