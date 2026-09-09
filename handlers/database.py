@@ -1,4 +1,4 @@
-# (c) @PredatorHackerzZ
+# HJ GROUPS OF FILES - Supabase database adapter
 
 import asyncio
 import datetime
@@ -7,8 +7,6 @@ from configs import Config
 
 
 class _AsyncCursor:
-    """Async iterator compatible with the original Mongo cursor usage."""
-
     def __init__(self, rows):
         self._rows = iter(rows or [])
 
@@ -23,36 +21,38 @@ class _AsyncCursor:
 
 
 class Database:
-
-    def __init__(self, uri, database_name):
+    def __init__(self, uri=None, database_name=None):
         if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
             raise RuntimeError(
-                "SUPABASE_URL and SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_ROLE_KEY) must be configured."
+                "SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) must be configured."
             )
         self.client: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
         self.table = "users"
+        self.settings_table = "bot_settings"
 
     async def _execute(self, operation):
         return await asyncio.to_thread(operation)
 
     @staticmethod
     def _ban_status(row):
+        # Support both the new scalar-column schema and the original JSON shape.
+        legacy = row.get("ban_status") or {}
         return {
-            "is_banned": bool(row.get("is_banned", False)),
-            "ban_duration": int(row.get("ban_duration", 0)),
-            "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
-            "ban_reason": row.get("ban_reason", "") or "",
+            "is_banned": bool(row.get("is_banned", legacy.get("is_banned", False))),
+            "ban_duration": int(row.get("ban_duration", legacy.get("ban_duration", 0)) or 0),
+            "banned_on": row.get("banned_on") or legacy.get("banned_on") or datetime.date.max.isoformat(),
+            "ban_reason": row.get("ban_reason", legacy.get("ban_reason", "")) or "",
         }
 
     def new_user(self, id):
-        return dict(
-            id=int(id),
-            join_date=datetime.date.today().isoformat(),
-            is_banned=False,
-            ban_duration=0,
-            banned_on=datetime.date.max.isoformat(),
-            ban_reason="",
-        )
+        return {
+            "id": int(id),
+            "join_date": datetime.date.today().isoformat(),
+            "is_banned": False,
+            "ban_duration": 0,
+            "banned_on": datetime.date.max.isoformat(),
+            "ban_reason": "",
+        }
 
     async def add_user(self, id):
         await self._execute(
@@ -63,18 +63,12 @@ class Database:
 
     async def is_user_exist(self, id):
         response = await self._execute(
-            lambda: self.client.table(self.table)
-            .select("id")
-            .eq("id", int(id))
-            .limit(1)
-            .execute()
+            lambda: self.client.table(self.table).select("id").eq("id", int(id)).limit(1).execute()
         )
         return bool(response.data)
 
     async def total_users_count(self):
-        response = await self._execute(
-            lambda: self.client.table(self.table).select("id").execute()
-        )
+        response = await self._execute(lambda: self.client.table(self.table).select("id").execute())
         return len(response.data or [])
 
     async def get_all_users(self):
@@ -91,74 +85,75 @@ class Database:
         return _AsyncCursor(rows)
 
     async def delete_user(self, user_id):
-        await self._execute(
-            lambda: self.client.table(self.table)
-            .delete()
-            .eq("id", int(user_id))
-            .execute()
-        )
+        await self._execute(lambda: self.client.table(self.table).delete().eq("id", int(user_id)).execute())
 
     async def remove_ban(self, id):
         await self._execute(
-            lambda: self.client.table(self.table)
-            .update(
-                dict(
-                    is_banned=False,
-                    ban_duration=0,
-                    banned_on=datetime.date.max.isoformat(),
-                    ban_reason="",
-                )
-            )
-            .eq("id", int(id))
-            .execute()
+            lambda: self.client.table(self.table).update({
+                "is_banned": False,
+                "ban_duration": 0,
+                "banned_on": datetime.date.max.isoformat(),
+                "ban_reason": "",
+            }).eq("id", int(id)).execute()
         )
 
     async def ban_user(self, user_id, ban_duration, ban_reason):
         await self._execute(
-            lambda: self.client.table(self.table)
-            .update(
-                dict(
-                    is_banned=True,
-                    ban_duration=int(ban_duration),
-                    banned_on=datetime.date.today().isoformat(),
-                    ban_reason=str(ban_reason),
-                )
-            )
-            .eq("id", int(user_id))
-            .execute()
+            lambda: self.client.table(self.table).update({
+                "is_banned": True,
+                "ban_duration": int(ban_duration),
+                "banned_on": datetime.date.today().isoformat(),
+                "ban_reason": str(ban_reason),
+            }).eq("id", int(user_id)).execute()
         )
 
     async def get_ban_status(self, id):
-        default = dict(
-            is_banned=False,
-            ban_duration=0,
-            banned_on=datetime.date.max.isoformat(),
-            ban_reason="",
-        )
         response = await self._execute(
             lambda: self.client.table(self.table)
             .select("is_banned,ban_duration,banned_on,ban_reason")
-            .eq("id", int(id))
-            .limit(1)
-            .execute()
+            .eq("id", int(id)).limit(1).execute()
         )
         if not response.data:
-            return default
+            return {
+                "is_banned": False,
+                "ban_duration": 0,
+                "banned_on": datetime.date.max.isoformat(),
+                "ban_reason": "",
+            }
         return self._ban_status(response.data[0])
 
     async def get_all_banned_users(self):
         response = await self._execute(
             lambda: self.client.table(self.table)
             .select("id,is_banned,ban_duration,banned_on,ban_reason,join_date")
-            .eq("is_banned", True)
-            .order("id")
-            .execute()
+            .eq("is_banned", True).order("id").execute()
         )
         rows = []
         for row in response.data or []:
             row["ban_status"] = self._ban_status(row)
             rows.append(row)
         return _AsyncCursor(rows)
+
+    async def get_auto_delete_seconds(self):
+        try:
+            response = await self._execute(
+                lambda: self.client.table(self.settings_table)
+                .select("value").eq("key", "auto_delete_seconds").limit(1).execute()
+            )
+            if response.data:
+                return int(response.data[0]["value"])
+        except Exception as err:
+            print(f"Auto-delete setting unavailable, using 1800 seconds: {err}")
+        return 1800
+
+    async def set_auto_delete_seconds(self, seconds):
+        seconds = int(seconds)
+        await self._execute(
+            lambda: self.client.table(self.settings_table).upsert(
+                {"key": "auto_delete_seconds", "value": str(seconds)},
+                on_conflict="key"
+            ).execute()
+        )
 
 
 db = Database(Config.SUPABASE_URL, Config.BOT_USERNAME)
