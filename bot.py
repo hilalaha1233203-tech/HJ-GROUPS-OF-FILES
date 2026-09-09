@@ -3,6 +3,7 @@
 import os
 import asyncio
 import traceback
+import time
 from binascii import (
     Error
 )
@@ -20,7 +21,8 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
-    Message
+    Message,
+    BotCommand
 )
 from configs import Config
 from handlers.database import db
@@ -74,16 +76,9 @@ async def start(bot: Client, cmd: Message):
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
-                        InlineKeyboardButton("BotsList Channel", url="https://t.me/TGRobot_List")
-                    ],
-                    [
                         InlineKeyboardButton("About Bot", callback_data="aboutbot"),
                         InlineKeyboardButton("About Dev", callback_data="aboutdevs"),
                         InlineKeyboardButton("Close 🚪", callback_data="closeMessage")
-                    ],
-                    [
-                        InlineKeyboardButton("Bots Channel", url="https://t.me/TeleRoidGroup"),
-                        InlineKeyboardButton(" Support Group", url="https://t.me/TeleRoid14")
                     ]
                 ]
             )
@@ -124,7 +119,7 @@ async def main(bot: Client, message: Message):
                 return
 
         if message.from_user.id in Config.BANNED_USERS:
-            await message.reply_text("Sorry, You are banned!\n\nContact [Support Group](https://t.me/TeleRoid14)",
+            await message.reply_text("Sorry, You are banned!\n\nContact my [Support Group](https://t.me/TeleRoid14)",
                                      disable_web_page_preview=True)
             return
 
@@ -141,7 +136,7 @@ async def main(bot: Client, message: Message):
             disable_web_page_preview=True
         )
     elif message.chat.type == enums.ChatType.CHANNEL:
-        if (message.chat.id == int(Config.LOG_CHANNEL)) or (message.chat.id == int(Config.UPDATES_CHANNEL)) or message.forward_from_chat or message.forward_from:
+        if (Config.LOG_CHANNEL and message.chat.id == int(Config.LOG_CHANNEL)) or (Config.UPDATES_CHANNEL and message.chat.id == int(Config.UPDATES_CHANNEL)) or message.forward_from_chat or message.forward_from:
             return
         elif int(message.chat.id) in Config.BANNED_CHAT_IDS:
             await bot.leave_chat(message.chat.id)
@@ -165,18 +160,26 @@ async def main(bot: Client, message: Message):
                     f"#CHANNEL_BUTTON:\n\n[{message.chat.title}](https://t.me/c/{private_ch}/{CH_edit.id}) Channel's Broadcasted File's Button Added!")
         except FloodWait as sl:
             await asyncio.sleep(sl.value)
-            await bot.send_message(
-                chat_id=int(Config.LOG_CHANNEL),
-                text=f"#FloodWait:\nGot FloodWait of `{str(sl.value)}s` from `{str(message.chat.id)}` !!",
-                disable_web_page_preview=True
-            )
+            if Config.LOG_CHANNEL:
+                try:
+                    await bot.send_message(
+                        chat_id=int(Config.LOG_CHANNEL),
+                        text=f"#FloodWait:\nGot FloodWait of `{str(sl.value)}s` from `{str(message.chat.id)}` !!",
+                        disable_web_page_preview=True
+                    )
+                except Exception:
+                    pass
         except Exception as err:
             await bot.leave_chat(message.chat.id)
-            await bot.send_message(
-                chat_id=int(Config.LOG_CHANNEL),
-                text=f"#ERROR_TRACEBACK:\nGot Error from `{str(message.chat.id)}` !!\n\n**Traceback:** `{err}`",
-                disable_web_page_preview=True
-            )
+            if Config.LOG_CHANNEL:
+                try:
+                    await bot.send_message(
+                        chat_id=int(Config.LOG_CHANNEL),
+                        text=f"#ERROR_TRACEBACK:\nGot Error from `{str(message.chat.id)}` !!\n\n**Traceback:** `{err}`",
+                        disable_web_page_preview=True
+                    )
+                except Exception:
+                    pass
 
 
 @Bot.on_message(filters.private & filters.command("broadcast") & filters.user(Config.BOT_OWNER) & filters.reply)
@@ -318,10 +321,6 @@ async def button(bot: Client, cmd: CallbackQuery):
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
-                        InlineKeyboardButton("Source Codes of Bot",
-                                             url="https://github.com/PredatorHackerzZ/TG-FileStore")
-                    ],
-                    [
                         InlineKeyboardButton("Go Home", callback_data="gotohome"),
                         InlineKeyboardButton("About Dev", callback_data="aboutdevs")
                     ]
@@ -335,10 +334,6 @@ async def button(bot: Client, cmd: CallbackQuery):
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(
                 [
-                    [
-                        InlineKeyboardButton("Source Codes of Bot",
-                                             url="https://github.com/PredatorHackerzZ/TG-FileStore")
-                    ],
                     [
                         InlineKeyboardButton("About Bot", callback_data="aboutbot"),
                         InlineKeyboardButton("Go Home", callback_data="gotohome")
@@ -354,16 +349,9 @@ async def button(bot: Client, cmd: CallbackQuery):
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
-                        InlineKeyboardButton("BotsList Channel", url="https://t.me/PayForBotz")
-                    ],
-                    [
                         InlineKeyboardButton("About Bot", callback_data="aboutbot"),
                         InlineKeyboardButton("About Dev", callback_data="aboutdevs"),
                         InlineKeyboardButton("Close 🚪", callback_data="closeMessage")
-                    ],
-                    [
-                        InlineKeyboardButton("Support Group", url="https://t.me/TeleRoid14"),
-                        InlineKeyboardButton("Bots Channel", url="https://t.me/TeleRoidGroup")
                     ]
                 ]
             )
@@ -379,21 +367,21 @@ async def button(bot: Client, cmd: CallbackQuery):
                 user = await bot.get_chat_member(channel_chat_id, cmd.message.chat.id)
                 if user.status == "kicked":
                     await cmd.message.edit(
-                        text="Sorry Sir, You are Banned to use me. Contact my [Support Group](https://t.me/TeleRoid14).",
+                        text="Sorry Sir, You are Banned to use me.",
                         disable_web_page_preview=True
                     )
                     return
             except UserNotParticipant:
                 invite_link = await get_invite_link(channel_chat_id)
                 await cmd.message.edit(
-                    text="**I like Your Smartness But Don't Be Oversmart! 😑**\n\n",
+                    text="**Please join the Updates Channel to use this Bot.**\n\n",
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [
                                 InlineKeyboardButton("🤖 Join Updates Channel", url=invite_link.invite_link)
                             ],
                             [
-                                InlineKeyboardButton("🔄 Refresh 🔄", callback_data="refreshmeh")
+                                InlineKeyboardButton("🔄 Refresh", callback_data="refreshForceSub")
                             ]
                         ]
                     )
@@ -401,7 +389,7 @@ async def button(bot: Client, cmd: CallbackQuery):
                 return
             except Exception:
                 await cmd.message.edit(
-                    text="Something went Wrong. Contact my [Support Group](https://t.me/TeleRoid14).",
+                    text="Something went wrong. Please try again later.",
                     disable_web_page_preview=True
                 )
                 return
@@ -410,10 +398,6 @@ async def button(bot: Client, cmd: CallbackQuery):
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup(
                 [
-                    [
-                        InlineKeyboardButton("Support Group", url="https://t.me/TeleRoid14"),
-                        InlineKeyboardButton("Bots Channel", url="https://t.me/TeleRoidGroup")
-                    ],
                     [
                         InlineKeyboardButton("About Bot", callback_data="aboutbot"),
                         InlineKeyboardButton("About Dev", callback_data="aboutdevs")
@@ -465,7 +449,31 @@ async def button(bot: Client, cmd: CallbackQuery):
 
     try:
         await cmd.answer()
-    except QueryIdInvalid: pass
+    except QueryIdInvalid:
+        pass
 
 
-Bot.run()
+async def setup_bot_commands():
+    commands = [
+        BotCommand("start", "Start the bot"),
+        BotCommand("clear_batch", "Clear your batch files"),
+        BotCommand("status", "Show total users"),
+        BotCommand("broadcast", "Broadcast a replied message"),
+        BotCommand("ban_user", "Ban a user"),
+        BotCommand("unban_user", "Unban a user"),
+        BotCommand("banned_users", "List banned users"),
+    ]
+    await Bot.set_bot_commands(commands)
+
+
+if __name__ == "__main__":
+    while True:
+        try:
+            Bot.run(setup_bot_commands())
+            break
+        except FloodWait as e:
+            wait_seconds = max(int(e.value), 30)
+            print(f"[{Config.BOT_USERNAME}] Telegram FloodWait during bot authorization. Waiting {wait_seconds} seconds before retry.")
+            time.sleep(wait_seconds)
+        except Exception:
+            raise
