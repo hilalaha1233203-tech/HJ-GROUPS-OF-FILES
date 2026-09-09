@@ -1,4 +1,4 @@
-# (c) @AbirHasan2005 | @PredatorHackerzZ | @MrAbhi2k3
+# HJ GROUPS OF FILES - Media saving
 
 import asyncio
 import requests
@@ -12,7 +12,7 @@ from handlers.helpers import str_to_b64
 
 
 def generate_random_alphanumeric():
-    """Generate a random 8-letter alphanumeric string."""
+    """Generate a random 8-character alphanumeric string."""
     characters = string.ascii_letters + string.digits
     return ''.join(random.choice(characters) for _ in range(8))
 
@@ -91,7 +91,7 @@ async def save_batch_media_in_channel(bot: Client, editable: Message, message_id
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("Delete Batch", callback_data="closeMessage")
-            ])
+            ]])
         )
         share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(str(SaveMessage.id))}"
         short_link = get_short(share_link)
