@@ -1,0 +1,77 @@
+name: Auto configure storage channel
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[storage-channel-auto]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch storage channel handling
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('bot.py')
+          s = p.read_text(encoding='utf-8')
+
+          # parse_db_message_link is kept synchronous; channel validation is performed
+          # asynchronously in resolve_existing_db_message where Supabase is available.
+          old = '''        if channel_id == Config.DB_CHANNEL:\n            return message_id\n        return None\n'''
+          new = '''        return (channel_id, message_id)\n'''
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          old = '''    if forwarded_chat is not None and forwarded_message_id:\n        if int(forwarded_chat.id) == int(Config.DB_CHANNEL):\n            return int(forwarded_message_id)\n\n    parsed = parse_db_message_link(message.text or message.caption or "")\n    if isinstance(parsed, int):\n        return parsed\n    if isinstance(parsed, tuple):\n        public_chat, message_id = parsed\n        try:\n            chat = await bot.get_chat(public_chat)\n            if int(chat.id) == int(Config.DB_CHANNEL):\n                return message_id\n        except Exception:\n            return None\n    return None\n'''
+          new = '''    db_channel_id = await db.get_db_channel_id()\n\n    if forwarded_chat is not None and forwarded_message_id:\n        source_channel_id = int(forwarded_chat.id)\n        if db_channel_id is None:\n            if int(message.from_user.id) != int(Config.BOT_OWNER):\n                return None\n            # First owner-forward automatically configures the storage channel.\n            await bot.get_chat(source_channel_id)\n            await db.set_db_channel_id(source_channel_id)\n            return int(forwarded_message_id)\n        if source_channel_id == int(db_channel_id):\n            return int(forwarded_message_id)\n\n    parsed = parse_db_message_link(message.text or message.caption or "")\n    if parsed is None:\n        return None\n\n    channel_ref, message_id = parsed\n    if isinstance(channel_ref, int):\n        if db_channel_id is None:\n            return None\n        return int(message_id) if int(channel_ref) == int(db_channel_id) else None\n\n    try:\n        chat = await bot.get_chat(channel_ref)\n        if db_channel_id is not None and int(chat.id) == int(db_channel_id):\n            return int(message_id)\n    except Exception:\n        return None\n    return None\n'''
+          if old not in s:
+              raise SystemExit('resolve_existing_db_message block not found')
+          s = s.replace(old, new, 1)
+
+          s = s.replace(
+              'db_message = await bot.get_messages(chat_id=Config.DB_CHANNEL, message_ids=int(message_id))',
+              'channel_id = await db.get_db_channel_id()\n    if channel_id is None:\n        raise RuntimeError("Storage channel is not configured. Forward one message from the private storage channel to the bot first.")\n    db_message = await bot.get_messages(chat_id=channel_id, message_ids=int(message_id))',
+              1,
+          )
+
+          old = '''        get_message = await bot.get_messages(chat_id=Config.DB_CHANNEL, message_ids=file_id)\n'''
+          new = '''        channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n'''
+          if old not in s:
+              raise SystemExit('start DB lookup not found')
+          s = s.replace(old, new, 1)
+
+          s = s.replace(
+              'f"Configured DB Channel: `{Config.DB_CHANNEL}`"',
+              'f"Configured DB Channel: `{await db.get_db_channel_id()}`"',
+              1,
+          )
+
+          s = s.replace(
+              'forwarded_msg = await message.forward(Config.DB_CHANNEL)',
+              'channel_id = await db.get_db_channel_id()\n            if channel_id is None:\n                raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n            forwarded_msg = await message.forward(channel_id)',
+              1,
+          )
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validate Python syntax
+        run: python -m py_compile bot.py handlers/*.py configs.py
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bot.py
+          git diff --cached --quiet && exit 0
+          git commit -m "[storage-channel-auto] Auto detect storage channel"
+          git push
