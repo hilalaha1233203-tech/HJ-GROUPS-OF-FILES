@@ -69,7 +69,16 @@ class Database:
             .order("id")
             .execute()
         )
-        return _AsyncCursor(response.data or [])
+        rows = []
+        for row in response.data or []:
+            row["ban_status"] = {
+                "is_banned": bool(row.get("is_banned", False)),
+                "ban_duration": int(row.get("ban_duration", 0)),
+                "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
+                "ban_reason": row.get("ban_reason", "") or "",
+            }
+            rows.append(row)
+        return _AsyncCursor(rows)
 
     async def delete_user(self, user_id):
         await self._execute(
@@ -138,7 +147,16 @@ class Database:
             .order("id")
             .execute()
         )
-        return _AsyncCursor(response.data or [])
+        rows = []
+        for row in response.data or []:
+            row["ban_status"] = {
+                "is_banned": True,
+                "ban_duration": int(row.get("ban_duration", 0)),
+                "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
+                "ban_reason": row.get("ban_reason", "") or "",
+            }
+            rows.append(row)
+        return _AsyncCursor(rows)
 
 
 db = Database(Config.SUPABASE_URL, Config.BOT_USERNAME)
