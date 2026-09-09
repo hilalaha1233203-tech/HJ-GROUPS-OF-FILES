@@ -8,8 +8,7 @@ class Config(object):
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
     BOT_USERNAME = os.environ.get("BOT_USERNAME")
-
-    # Optional legacy bootstrap value. Leave empty when using automatic multi-channel detection.
+    # Optional legacy bootstrap. Automatic multi-channel detection is preferred.
     DB_CHANNEL = os.environ.get("DB_CHANNEL")
     if DB_CHANNEL:
         DB_CHANNEL = int(DB_CHANNEL)
@@ -54,7 +53,7 @@ class Config(object):
 
 Permanent Telegram FileStore Bot.
 
-📁 Send any supported file or media to save it in the configured Telegram storage channels and receive a permanent shareable link.
+📁 Send any supported file or media to save it in a Telegram storage channel and receive a permanent shareable link.
 
 🔐 Supabase stores users and bot settings.
 ☁️ Telegram channels store the actual files.
@@ -69,7 +68,7 @@ Hello, [{}](tg://user?id={}) 👋
 
 Permanent Telegram **FileStore Bot**.
 
-📁 Send a file to save it in your configured storage channels and generate a shareable link.
+📁 Send a file to save it in your configured storage channel(s) and generate a shareable link.
 
 ⚡ Fast • Simple • Permanent
 
@@ -81,21 +80,21 @@ Use **Commands** to view all available commands and features.
 
 ➜ `/start` — Start the bot / open a share link.
 ➜ `/genlink` — Store a single replied message or file.
-➜ `/batch` — Create a batch link from saved/replied messages.
-➜ `/custom_batch` — Create a batch from multiple selected messages or links.
-➜ `/shortener` — Shorten a shareable link.
-➜ `/settings` — Customize bot settings. Owner only.
+➜ `/batch` — Store multiple messages from a channel.
+➜ `/custom_batch` — Store multiple selected/random messages.
+➜ `/shortener` — Shorten any shareable link.
+➜ `/settings` — Customize your settings as your need.
 ➜ `/clear_batch` — Clear your current batch.
 
 🛡️ **Moderators Commands:**
 
-➜ `/special_link` — Create an editable batch/share link.
-➜ `/universal_link` — Create a link payload that can be reused by supported clones.
-➜ `/broadcast` — Broadcast a message to registered users.
+➜ `/special_link` — Store multiple messages and create an editable link.
+➜ `/universal_link` — Create a reusable link payload for supported clones.
+➜ `/broadcast` — Broadcast a message to users.
 ➜ `/ban` — Ban a user.
 ➜ `/unban` — Unban a user.
 
-**Legacy admin commands**
+**Admin compatibility commands**
 ➜ `/status` — Show total registered users.
 ➜ `/ban_user` — Ban a user for a number of days.
 ➜ `/unban_user` — Remove a user ban.
