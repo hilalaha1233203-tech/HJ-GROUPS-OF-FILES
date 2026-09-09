@@ -7,7 +7,7 @@ from configs import Config
 
 
 class _AsyncCursor:
-    """Small async iterator compatible with the original Mongo cursor usage."""
+    """Async iterator compatible with the original Mongo cursor usage."""
 
     def __init__(self, rows):
         self._rows = iter(rows or [])
@@ -25,7 +25,6 @@ class _AsyncCursor:
 class Database:
 
     def __init__(self, uri, database_name):
-        # Keep the original constructor signature so the rest of the fork stays unchanged.
         if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
             raise RuntimeError(
                 "SUPABASE_URL and SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_ROLE_KEY) must be configured."
@@ -40,67 +39,70 @@ class Database:
         return dict(
             id=int(id),
             join_date=datetime.date.today().isoformat(),
-            ban_status=dict(
-                is_banned=False,
-                ban_duration=0,
-                banned_on=datetime.date.max.isoformat(),
-                ban_reason=''
-            )
+            is_banned=False,
+            ban_duration=0,
+            banned_on=datetime.date.max.isoformat(),
+            ban_reason="",
         )
 
     async def add_user(self, id):
         await self._execute(
-            lambda: self.client.table(self.table).insert(self.new_user(id)).execute()
+            lambda: self.client.table(self.table).upsert(self.new_user(id), on_conflict="id").execute()
         )
 
     async def is_user_exist(self, id):
         response = await self._execute(
-            lambda: self.client.table(self.table).select('id').eq('id', int(id)).limit(1).execute()
+            lambda: self.client.table(self.table).select("id").eq("id", int(id)).limit(1).execute()
         )
-        return True if response.data else False
+        return bool(response.data)
 
     async def total_users_count(self):
         response = await self._execute(
-            lambda: self.client.table(self.table).select('id').execute()
+            lambda: self.client.table(self.table).select("id").execute()
         )
         return len(response.data or [])
 
     async def get_all_users(self):
         response = await self._execute(
-            lambda: self.client.table(self.table).select('*').order('id').execute()
+            lambda: self.client.table(self.table)
+            .select("id,is_banned,ban_duration,banned_on,ban_reason,join_date")
+            .order("id")
+            .execute()
         )
         return _AsyncCursor(response.data or [])
 
     async def delete_user(self, user_id):
         await self._execute(
-            lambda: self.client.table(self.table).delete().eq('id', int(user_id)).execute()
+            lambda: self.client.table(self.table).delete().eq("id", int(user_id)).execute()
         )
 
     async def remove_ban(self, id):
-        ban_status = dict(
-            is_banned=False,
-            ban_duration=0,
-            banned_on=datetime.date.max.isoformat(),
-            ban_reason=''
-        )
         await self._execute(
             lambda: self.client.table(self.table)
-            .update({'ban_status': ban_status})
-            .eq('id', int(id))
+            .update(
+                dict(
+                    is_banned=False,
+                    ban_duration=0,
+                    banned_on=datetime.date.max.isoformat(),
+                    ban_reason="",
+                )
+            )
+            .eq("id", int(id))
             .execute()
         )
 
     async def ban_user(self, user_id, ban_duration, ban_reason):
-        ban_status = dict(
-            is_banned=True,
-            ban_duration=int(ban_duration),
-            banned_on=datetime.date.today().isoformat(),
-            ban_reason=str(ban_reason)
-        )
         await self._execute(
             lambda: self.client.table(self.table)
-            .update({'ban_status': ban_status})
-            .eq('id', int(user_id))
+            .update(
+                dict(
+                    is_banned=True,
+                    ban_duration=int(ban_duration),
+                    banned_on=datetime.date.today().isoformat(),
+                    ban_reason=str(ban_reason),
+                )
+            )
+            .eq("id", int(user_id))
             .execute()
         )
 
@@ -109,28 +111,34 @@ class Database:
             is_banned=False,
             ban_duration=0,
             banned_on=datetime.date.max.isoformat(),
-            ban_reason=''
+            ban_reason="",
         )
         response = await self._execute(
             lambda: self.client.table(self.table)
-            .select('ban_status')
-            .eq('id', int(id))
+            .select("is_banned,ban_duration,banned_on,ban_reason")
+            .eq("id", int(id))
             .limit(1)
             .execute()
         )
         if not response.data:
             return default
-        return response.data[0].get('ban_status') or default
+        row = response.data[0]
+        return {
+            "is_banned": bool(row.get("is_banned", False)),
+            "ban_duration": int(row.get("ban_duration", 0)),
+            "banned_on": row.get("banned_on") or datetime.date.max.isoformat(),
+            "ban_reason": row.get("ban_reason", "") or "",
+        }
 
     async def get_all_banned_users(self):
         response = await self._execute(
-            lambda: self.client.table(self.table).select('*').execute()
+            lambda: self.client.table(self.table)
+            .select("id,is_banned,ban_duration,banned_on,ban_reason,join_date")
+            .eq("is_banned", True)
+            .order("id")
+            .execute()
         )
-        rows = [
-            row for row in (response.data or [])
-            if (row.get('ban_status') or {}).get('is_banned') is True
-        ]
-        return _AsyncCursor(rows)
+        return _AsyncCursor(response.data or [])
 
 
 db = Database(Config.SUPABASE_URL, Config.BOT_USERNAME)
