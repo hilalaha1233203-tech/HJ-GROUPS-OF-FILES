@@ -28,3 +28,12 @@ The code also accepts `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_KEY` as compatibi
 ## 4. Deploy
 
 After saving the variables in Voroa, redeploy the Background Worker. The bot database layer keeps the original `Database` method interface, so the existing bot handlers and broadcast flow continue to call the same methods.
+
+
+## 5. Admin auto-delete setting
+
+The SQL also creates the `bot_settings` table. After deployment, the bot owner can run `/settings` to choose the auto-delete time for files delivered from share/start links.
+
+Available choices: 5 minutes, 15 minutes, 30 minutes, 1 hour, 6 hours, 24 hours, or disabled.
+
+This setting is stored in Supabase and is available after a worker restart. Only `BOT_OWNER` can change it.
