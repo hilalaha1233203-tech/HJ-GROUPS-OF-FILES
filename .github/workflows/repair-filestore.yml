@@ -24,7 +24,7 @@ jobs:
           from pathlib import Path
           p=Path('bot.py')
           s=p.read_text()
-          s=s.replace('def make_share_link(message_id: int) -> str:\n    token = str_to_b64(str(int(message_id)))\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"', '''def make_share_link(message_id: int, channel_id=None) -> str:\n    """New links carry channel+message; legacy message-only links remain supported."""\n    payload = str(int(message_id)) if channel_id is None else f"{int(channel_id)}|{int(message_id)}"\n    token = str_to_b64(payload)\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"''')
+          s=s.replace('def make_share_link(message_id: int) -> str:\n    token = str_to_b64(str(int(message_id)))\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"', '''def make_share_link(message_id: int, channel_id=None) -> str:\n    payload = str(int(message_id)) if channel_id is None else f"{int(channel_id)}|{int(message_id)}"\n    token = str_to_b64(payload)\n    return f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{token}"''')
           s=s.replace('share_link = make_share_link(int(db_message.id))', 'share_link = make_share_link(int(db_message.id), channel_id)')
           old='''        try:\n            file_id = int(b64_to_str(usr_cmd).split("_")[-1])\n        except (Error, UnicodeDecodeError):\n            file_id = int(usr_cmd.split("_")[-1])\n\n        channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)'''
           new='''        try:\n            decoded = b64_to_str(usr_cmd)\n            if "|" in decoded:\n                channel_part, message_part = decoded.split("|", 1)\n                channel_id = int(channel_part)\n                file_id = int(message_part)\n            else:\n                channel_id = None\n                file_id = int(decoded.split("_")[-1])\n        except (Error, UnicodeDecodeError, ValueError):\n            raw = usr_cmd.split("_")[-1]\n            if "|" in raw:\n                channel_part, message_part = raw.split("|", 1)\n                channel_id = int(channel_part)\n                file_id = int(message_part)\n            else:\n                channel_id = None\n                file_id = int(raw)\n\n        if channel_id is None:\n            channel_id = await db.get_db_channel_id()\n        if channel_id is None:\n            raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")\n        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)'''
@@ -36,9 +36,10 @@ jobs:
           if marker not in s: raise SystemExit('handler marker not found')
           s=s.replace(marker, handlers+marker, 1)
           marker2='async def setup_bot_commands():'
-          recovery='''async def recover_storage_channels():\n    """Re-discover accessible storage channels after a Voroa restart."""\n    try:\n        stored = await db.get_storage_channels()\n    except Exception as err:\n        print(f"Storage settings read failed: {err}")\n        stored = []\n    if Config.DB_CHANNEL:\n        stored.append(int(Config.DB_CHANNEL))\n    seen=[]\n    for cid in stored:\n        if cid in seen:\n            continue\n        try:\n            chat = await Bot.get_chat(int(cid))\n            if chat.type in (enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP):\n                seen.append(int(chat.id))\n        except Exception as err:\n            print(f"Storage channel {cid} unavailable: {err}")\n    if seen:\n        try:\n            await db.set_storage_channels(seen)\n        except Exception as err:\n            print(f"Storage channel persistence failed: {err}")\n    return seen\n\n\n'''
+          recovery='''async def recover_storage_channels():\n    try:\n        stored = await db.get_storage_channels()\n    except Exception as err:\n        print(f"Storage settings read failed: {err}")\n        stored = []\n    if Config.DB_CHANNEL:\n        stored.append(int(Config.DB_CHANNEL))\n    seen=[]\n    for cid in stored:\n        if cid in seen:\n            continue\n        try:\n            chat = await Bot.get_chat(int(cid))\n            if chat.type in (enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP):\n                seen.append(int(chat.id))\n        except Exception as err:\n            print(f"Storage channel {cid} unavailable: {err}")\n    if seen:\n        try:\n            await db.set_storage_channels(seen)\n        except Exception as err:\n            print(f"Storage channel persistence failed: {err}")\n    return seen\n\n\n'''
           if marker2 not in s: raise SystemExit('setup marker not found')
           s=s.replace(marker2,recovery+marker2,1)
+          s=s.replace('    await setup_bot_commands()', '    await recover_storage_channels()\n    await setup_bot_commands()', 1)
           p.write_text(s)
           PY
           python3 -m py_compile bot.py
@@ -52,25 +53,14 @@ jobs:
           s=s.replace('async def send_media_and_reply(bot: Client, user_id: int, file_id: int):\n    sent_message = await media_forward(bot, user_id, file_id)','async def send_media_and_reply(bot: Client, user_id: int, file_id: int, channel_id=None):\n    sent_message = await media_forward(bot, user_id, file_id, channel_id)')
           p.write_text(s)
           p=Path('handlers/save_media.py'); s=p.read_text()
-          s=s.replace('share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(str(SaveMessage.id))}"','share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f\"{channel_id}|{SaveMessage.id}\")}"')
-          s=s.replace('share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(file_er_id)}"','share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(f\"{channel_id}|{file_er_id}\")}"')
+          old1='share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(str(SaveMessage.id))}"'
+          new1='payload = f"{channel_id}|{SaveMessage.id}"\n        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(payload)}"'
+          old2='share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(file_er_id)}"'
+          new2='payload = f"{channel_id}|{file_er_id}"\n        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(payload)}"'
+          s=s.replace(old1,new1).replace(old2,new2)
           p.write_text(s)
           PY
           python3 -m py_compile bot.py handlers/send_file.py handlers/save_media.py handlers/database.py configs.py
-      - name: Initialize storage recovery at startup
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('bot.py'); s=p.read_text()
-          if 'await recover_storage_channels()' not in s:
-              idx=s.rfind('Bot.start()')
-              if idx == -1:
-                  raise SystemExit('Bot.start() not found')
-              line_end=s.find('\n',idx)
-              s=s[:line_end+1]+'    await recover_storage_channels()\n'+s[line_end+1:]
-          p.write_text(s)
-          PY
-          python3 -m py_compile bot.py
       - name: Commit repaired source
         run: |
           git config user.name github-actions[bot]
