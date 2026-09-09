@@ -8,7 +8,8 @@ class Config(object):
     API_HASH = os.environ.get("API_HASH")
     BOT_TOKEN = os.environ.get("BOT_TOKEN")
     BOT_USERNAME = os.environ.get("BOT_USERNAME")
-    # Optional bootstrap value. The bot can learn the storage channel automatically.
+
+    # Optional legacy bootstrap value. Leave empty when using automatic multi-channel detection.
     DB_CHANNEL = os.environ.get("DB_CHANNEL")
     if DB_CHANNEL:
         DB_CHANNEL = int(DB_CHANNEL)
@@ -17,7 +18,6 @@ class Config(object):
     SHORTLINK_API = os.environ.get("SHORTLINK_API")
     BOT_OWNER = int(os.environ.get("BOT_OWNER", "0"))
 
-    # Supabase replaces MongoDB for user/status data.
     SUPABASE_URL = os.environ.get("SUPABASE_URL")
     SUPABASE_KEY = (
         os.environ.get("SUPABASE_SECRET_KEY")
@@ -26,8 +26,8 @@ class Config(object):
     )
     DATABASE_URL = SUPABASE_URL
 
-    # Optional channel settings. Blank means disabled.
-    UPDATES_CHANNEL = os.environ.get("UPDATES_CHANNEL") or None
+    # Force Subscribe is intentionally disabled.
+    UPDATES_CHANNEL = None
     LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None
 
     OTHER_USERS_CAN_SAVE_FILE = [
@@ -54,12 +54,12 @@ class Config(object):
 
 Permanent Telegram FileStore Bot.
 
-📁 Send any supported file or media to save it in the configured private Telegram database channel and receive a shareable link.
+📁 Send any supported file or media to save it in the configured Telegram storage channels and receive a permanent shareable link.
 
-🔐 Supabase is used for user/status records.
-☁️ Files remain stored in the configured Telegram DB channel.
+🔐 Supabase stores users and bot settings.
+☁️ Telegram channels store the actual files.
 
-Supports private file saving, batch mode, channel mode, short links, broadcasts and admin user controls.
+Supports single-file links, batch links, multiple storage channels, URL shortener, broadcasts and admin controls.
 """
 
     HOME_TEXT = """
@@ -67,9 +67,9 @@ Hello, [{}](tg://user?id={}) 👋
 
 **HJ GROUPS OF FILES**
 
-This is a permanent Telegram **FileStore Bot**.
+Permanent Telegram **FileStore Bot**.
 
-📁 Send me any file or media and I will save it to the configured private Telegram storage channel and generate a shareable link.
+📁 Send a file to save it in your configured storage channels and generate a shareable link.
 
 ⚡ Fast • Simple • Permanent
 
@@ -77,24 +77,27 @@ Use **Commands** to view all available commands and features.
 """
 
     COMMANDS_TEXT = """
-**HJ GROUPS OF FILES — COMMANDS**
+📚 **Available Commands:**
 
-**User commands**
-`/start` — Open the bot and retrieve shared files
-`/clear_batch` — Clear your current batch
+➜ `/start` — Start the bot / open a share link.
+➜ `/genlink` — Store a single replied message or file.
+➜ `/batch` — Create a batch link from saved/replied messages.
+➜ `/custom_batch` — Create a batch from multiple selected messages or links.
+➜ `/shortener` — Shorten a shareable link.
+➜ `/settings` — Customize bot settings. Owner only.
+➜ `/clear_batch` — Clear your current batch.
 
-**Owner commands**
-`/status` — Show total registered users
-`/broadcast` — Broadcast a replied message to users
-`/ban_user` — Ban a user for a number of days
-`/unban_user` — Remove a user ban
-`/banned_users` — List banned users
+🛡️ **Moderators Commands:**
 
-**Main features**
-• Private file saving with permanent share links
-• Batch file saving and batch links
-• Channel file storage mode
-• Optional URL shortener
-• Supabase user/status database
-• Telegram DB channel file storage
+➜ `/special_link` — Create an editable batch/share link.
+➜ `/universal_link` — Create a link payload that can be reused by supported clones.
+➜ `/broadcast` — Broadcast a message to registered users.
+➜ `/ban` — Ban a user.
+➜ `/unban` — Unban a user.
+
+**Legacy admin commands**
+➜ `/status` — Show total registered users.
+➜ `/ban_user` — Ban a user for a number of days.
+➜ `/unban_user` — Remove a user ban.
+➜ `/banned_users` — List banned users.
 """
