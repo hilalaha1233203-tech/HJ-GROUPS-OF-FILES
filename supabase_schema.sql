@@ -44,3 +44,16 @@ alter table public.users alter column ban_reason set not null;
 create index if not exists users_is_banned_idx on public.users (is_banned);
 
 alter table public.users enable row level security;
+
+
+-- Persistent admin settings
+create table if not exists public.bot_settings (
+    key text primary key,
+    value text not null
+);
+
+insert into public.bot_settings (key, value)
+values ('auto_delete_seconds', '1800')
+on conflict (key) do nothing;
+
+alter table public.bot_settings enable row level security;
