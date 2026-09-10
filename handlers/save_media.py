@@ -55,9 +55,6 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
         await asyncio.sleep(sl.value)
         return await forward_to_channel(bot, message, editable)
     except Exception as pyrogram_error:
-        # Pyrogram/MTProto can report `Peer id invalid` when the bot session has
-        # not resolved a private channel peer yet. Bot API copyMessage uses the
-        # bot's chat access directly and avoids that stale-peer failure.
         try:
             return await api_copy_message(
                 chat_id=channel_id,
@@ -117,7 +114,7 @@ async def save_batch_media_in_channel(
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Delete Batch", callback_data="closeMessage")]])
         )
         payload = f"{channel_id}|{save_message.id}"
-        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(payload)}"
+        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=HJGroups_{str_to_b64(payload)}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
@@ -139,10 +136,6 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
             return
 
         channel_id = await get_storage_channel_id()
-
-        # Use the same Pyrogram -> Bot API fallback as batch saving. This is
-        # important for private channels where Pyrogram may have an unresolved
-        # peer even though the bot itself has channel access.
         forwarded_msg = await forward_to_channel(bot, message, editable)
         file_er_id = forwarded_msg.id if hasattr(forwarded_msg, "id") else forwarded_msg.get("message_id")
         if not file_er_id:
@@ -158,7 +151,7 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
                 pass
 
         payload = f"{channel_id}|{file_er_id}"
-        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=PredatorHackerzZ_{str_to_b64(payload)}"
+        share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=HJGroups_{str_to_b64(payload)}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
