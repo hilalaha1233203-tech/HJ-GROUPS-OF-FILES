@@ -1,6 +1,8 @@
 name: Fix command propagation
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,13 +16,609 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply command propagation fix
-        run: python .github/scripts/fix_command_propagation.py
-      - name: Commit and push
+      - name: Apply HJ FileStore UX and delivery patch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path, pattern, replacement, flags=re.S):
+              p = Path(path)
+              s = p.read_text(encoding='utf-8')
+              n = len(re.findall(pattern, s, flags))
+              if n != 1:
+                  raise SystemExit(f'{path}: expected exactly 1 match, found {n}: {pattern}')
+              s = re.sub(pattern, replacement, s, count=1, flags=flags)
+              p.write_text(s, encoding='utf-8')
+
+          # ------------------------------------------------------------
+          # configs.py: configurable channel-join buttons + HJ tag
+          # ------------------------------------------------------------
+          p = Path('configs.py')
+          s = p.read_text(encoding='utf-8')
+          anchor = '    LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None\n'
+          addition = '''    LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None\n\n    # Delivery caption / join buttons. Use @username or a full https://t.me/... URL.\n    MAIN_CHANNEL = os.environ.get("MAIN_CHANNEL") or "@hjgroups_1"\n    BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL") or None\n    POCKET_LIBRARY = os.environ.get("POCKET_LIBRARY") or None\n    DELIVERY_TAG = "@hjgroups_1"\n'''
+          if 'MAIN_CHANNEL = os.environ.get("MAIN_CHANNEL")' not in s:
+              if anchor not in s:
+                  raise SystemExit('configs.py anchor not found')
+              s = s.replace(anchor, addition, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # ------------------------------------------------------------
+          # handlers/save_media.py: batch can use source channel + user
+          # ------------------------------------------------------------
+          p = Path('handlers/save_media.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''async def save_batch_media_in_channel(bot: Client, editable: Message, message_ids: list):\n    try:\n        source_user = editable.reply_to_message.from_user\n        if source_user is None or not _user_can_save(source_user.id):\n            await editable.reply_text("You are not authorized to save files.")\n            return\n\n        channel_id = await get_storage_channel_id()\n        message_ids_str = ""\n        for message_id in message_ids:\n            message = await bot.get_messages(chat_id=editable.chat.id, message_ids=message_id)\n            sent_message = await forward_to_channel(bot, message, editable)\n'''
+          new = '''async def save_batch_media_in_channel(\n    bot: Client,\n    editable: Message,\n    message_ids: list,\n    source_chat_id=None,\n    request_user_id=None,\n):\n    try:\n        if request_user_id is not None:\n            source_user_id = int(request_user_id)\n        elif editable.reply_to_message and editable.reply_to_message.from_user:\n            source_user_id = int(editable.reply_to_message.from_user.id)\n        else:\n            source_user_id = int(editable.from_user.id) if editable.from_user else 0\n\n        if not source_user_id or not _user_can_save(source_user_id):\n            await editable.reply_text("You are not authorized to save files.")\n            return\n\n        channel_id = await get_storage_channel_id()\n        source_chat_id = source_chat_id or editable.chat.id\n        message_ids_str = ""\n        for message_id in message_ids:\n            message = await bot.get_messages(chat_id=source_chat_id, message_ids=message_id)\n            if message is None:\n                continue\n            sent_message = await forward_to_channel(bot, message, editable)\n'''
+          if old not in s:
+              raise SystemExit('save_media.py batch block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # ------------------------------------------------------------
+          # handlers/send_file.py: HJ-style caption, channel buttons,
+          # copyright timer notice, dynamic file name/size.
+          # ------------------------------------------------------------
+          p = Path('handlers/send_file.py')
+          p.write_text(r'''# HJ GROUPS OF FILES - File delivery
+
+import asyncio
+from pyrogram import Client
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import FloodWait
+from configs import Config
+from handlers.database import db
+from handlers.telegram_api import copy_message as api_copy_message, edit_message_caption as api_edit_message_caption, edit_message_reply_markup as api_edit_message_reply_markup
+
+_DELETE_TASKS = set()
+
+
+def human_size(size):
+    try:
+        size = int(size)
+    except Exception:
+        return "Unknown"
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 ** 2:
+        return f"{size / 1024:.2f} KB"
+    if size < 1024 ** 3:
+        return f"{size / (1024 ** 2):.2f} MB"
+    return f"{size / (1024 ** 3):.2f} GB"
+
+
+def _file_meta(message: Message):
+    media = getattr(message, "document", None) or getattr(message, "audio", None) or getattr(message, "video", None) or getattr(message, "animation", None)
+    if media is not None:
+        return getattr(media, "file_name", None) or "Telegram Media", getattr(media, "file_size", None)
+    if getattr(message, "photo", None):
+        return "Photo.jpg", getattr(message.photo, "file_size", None)
+    if getattr(message, "voice", None):
+        return "Voice Message.ogg", getattr(message.voice, "file_size", None)
+    return "Telegram Message", None
+
+
+def build_caption(message: Message):
+    name, size = _file_meta(message)
+    return f"File Name : {name}\n\nFile size : {human_size(size)}\n\n{Config.DELIVERY_TAG}"
+
+
+def _url(value):
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if value.startswith("https://") or value.startswith("http://"):
+        return value
+    if value.startswith("@"):
+        return f"https://t.me/{value[1:]}"
+    return None
+
+
+def build_channel_buttons():
+    rows = []
+    for label, value in (
+        ("Main Channel", Config.MAIN_CHANNEL),
+        ("Backup Channel", Config.BACKUP_CHANNEL),
+        ("Pocket Library", Config.POCKET_LIBRARY),
+    ):
+        url = _url(value)
+        if url:
+            rows.append([InlineKeyboardButton(label, url=url)])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def build_channel_buttons_json():
+    rows = []
+    for label, value in (
+        ("Main Channel", Config.MAIN_CHANNEL),
+        ("Backup Channel", Config.BACKUP_CHANNEL),
+        ("Pocket Library", Config.POCKET_LIBRARY),
+    ):
+        url = _url(value)
+        if url:
+            rows.append([{"text": label, "url": url}])
+    return {"inline_keyboard": rows} if rows else None
+
+
+def format_delete_time(seconds):
+    try:
+        seconds = int(seconds)
+    except Exception:
+        return "the selected time"
+    if seconds <= 0:
+        return None
+    if seconds % 3600 == 0:
+        value = seconds // 3600
+        return f"{value} hour" + ("s" if value != 1 else "")
+    if seconds % 60 == 0:
+        value = seconds // 60
+        return f"{value} minute" + ("s" if value != 1 else "")
+    return f"{seconds} second" + ("s" if seconds != 1 else "")
+
+
+def build_delete_notice(delay):
+    human = format_delete_time(delay)
+    if not human:
+        return None
+    return (
+        "❗️❗️❗️𝕀𝕄ℙ𝕆ℝ𝕋𝔸ℕ𝕋❗️️❗️❗️\n\n"
+        f'ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ɪɴ "{human}" ⏳ (ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ɪꜱꜱᴜᴇꜱ)🤕.\n\n'
+        f'ᴘʟᴇᴀꜱᴇ ʟɪꜱᴛᴇɴ ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ʙᴇꜰᴏʀᴇ "{human}" ᴛᴏ ᴀᴠᴏɪᴅ ʟᴏꜱɪɴɢ...\n\n'
+        "𝕋𝕙𝕒𝕟𝕜 𝕐𝕠𝕦 𝔽𝕠𝕣 ℂ𝕙𝕠𝕠𝕤𝕚𝕟𝕘 ℍ𝕁 𝔾𝕣𝕠𝕦𝕡𝕤🔮"
+    )
+
+
+async def _safe_get_source(bot, channel_id, file_id):
+    try:
+        return await bot.get_messages(chat_id=channel_id, message_ids=file_id)
+    except Exception:
+        return None
+
+
+async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None):
+    channel_id = channel_id or await db.get_db_channel_id()
+    if channel_id is None:
+        raise RuntimeError("Storage channel is not configured.")
+
+    protect_content = await db.get_protect_content()
+    source = await _safe_get_source(bot, channel_id, file_id)
+    caption = build_caption(source) if source else None
+    reply_markup = build_channel_buttons()
+
+    try:
+        sent = await bot.copy_message(
+            chat_id=user_id,
+            from_chat_id=channel_id,
+            message_id=file_id,
+            caption=caption,
+            protect_content=protect_content,
+            reply_markup=reply_markup,
+        )
+        return sent
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await media_forward(bot, user_id, file_id, channel_id)
+    except Exception as pyrogram_error:
+        try:
+            copied = await api_copy_message(
+                chat_id=user_id,
+                from_chat_id=channel_id,
+                message_id=file_id,
+                protect_content=protect_content,
+            )
+            copied_id = (copied or {}).get("message_id")
+            if copied_id:
+                if caption:
+                    try:
+                        await api_edit_message_caption(user_id, copied_id, caption)
+                    except Exception:
+                        pass
+                buttons = build_channel_buttons_json()
+                if buttons:
+                    try:
+                        await api_edit_message_reply_markup(user_id, copied_id, buttons)
+                    except Exception:
+                        pass
+            return copied
+        except Exception:
+            raise pyrogram_error
+
+
+async def _delete_delivered_messages(bot: Client, chat_id: int, message_ids, delay: int):
+    try:
+        await asyncio.sleep(delay)
+        clean_ids = [int(mid) for mid in message_ids if mid]
+        if clean_ids:
+            await bot.delete_messages(chat_id=int(chat_id), message_ids=clean_ids, revoke=True)
+            print(f"[AUTO_DELETE] Deleted chat={chat_id} messages={clean_ids}")
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await _delete_delivered_messages(bot, chat_id, message_ids, 0)
+    except Exception as err:
+        print(f"[AUTO_DELETE] Failed chat={chat_id} messages={message_ids}: {err}")
+
+
+def _track_delete_task(task):
+    _DELETE_TASKS.add(task)
+    task.add_done_callback(_DELETE_TASKS.discard)
+
+
+async def send_delete_notice(bot: Client, user_id: int, delay: int):
+    text = build_delete_notice(delay)
+    if not text:
+        return None
+    try:
+        return await bot.send_message(chat_id=user_id, text=text, disable_web_page_preview=True)
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await send_delete_notice(bot, user_id, delay)
+
+
+async def send_media_and_reply(bot: Client, user_id: int, file_id: int, channel_id=None, show_notice=True, schedule_delete=True):
+    sent_message = await media_forward(bot, user_id, file_id, channel_id)
+    if sent_message is None:
+        return []
+
+    delivered = [m for m in sent_message] if isinstance(sent_message, (list, tuple)) else [sent_message]
+    message_ids = [getattr(m, "id", None) if not isinstance(m, dict) else m.get("message_id") for m in delivered]
+
+    notice = None
+    delay = await db.get_auto_delete_seconds()
+    if show_notice:
+        notice = await send_delete_notice(bot, user_id, delay)
+        if notice is not None:
+            message_ids.append(getattr(notice, "id", None))
+
+    if schedule_delete and delay > 0:
+        task = asyncio.create_task(_delete_delivered_messages(bot, user_id, message_ids, delay))
+        _track_delete_task(task)
+
+    return delivered
+''', encoding='utf-8')
+
+          # ------------------------------------------------------------
+          # handlers/telegram_api.py: optional caption/keyboard/edit helpers
+          # ------------------------------------------------------------
+          p = Path('handlers/telegram_api.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace(
+              'async def copy_message(chat_id: int, from_chat_id: int, message_id: int, protect_content: bool = False):\n    return await asyncio.to_thread(\n        _call,\n        "copyMessage",\n        {\n            "chat_id": int(chat_id),\n            "from_chat_id": int(from_chat_id),\n            "message_id": int(message_id),\n            "protect_content": bool(protect_content),\n        },\n    )\n',
+              'async def copy_message(chat_id: int, from_chat_id: int, message_id: int, protect_content: bool = False, caption=None, reply_markup=None):\n    payload = {\n        "chat_id": int(chat_id),\n        "from_chat_id": int(from_chat_id),\n        "message_id": int(message_id),\n        "protect_content": bool(protect_content),\n    }\n    if caption is not None:\n        payload["caption"] = str(caption)\n    if reply_markup is not None:\n        payload["reply_markup"] = reply_markup\n    return await asyncio.to_thread(_call, "copyMessage", payload)\n\n\nasync def edit_message_caption(chat_id: int, message_id: int, caption: str):\n    return await asyncio.to_thread(_call, "editMessageCaption", {\n        "chat_id": int(chat_id),\n        "message_id": int(message_id),\n        "caption": str(caption),\n    })\n\n\nasync def edit_message_reply_markup(chat_id: int, message_id: int, reply_markup: dict):\n    return await asyncio.to_thread(_call, "editMessageReplyMarkup", {\n        "chat_id": int(chat_id),\n        "message_id": int(message_id),\n        "reply_markup": reply_markup,\n    })\n',
+              1,
+          )
+          p.write_text(s, encoding='utf-8')
+
+          # ------------------------------------------------------------
+          # bot.py: forwarded-message state + simple command workflow
+          # ------------------------------------------------------------
+          p = Path('bot.py')
+          s = p.read_text(encoding='utf-8')
+          if 'USER_WORKFLOW = {}' not in s:
+              s = s.replace('MediaList = {}\n', 'MediaList = {}\nUSER_WORKFLOW = {}\n', 1)
+
+          helpers = r'''
+
+
+def _workflow_state(user_id):
+    key = str(int(user_id))
+    return USER_WORKFLOW.setdefault(key, {"recent": [], "batch_mode": False, "batch_start": None, "batch_end": None})
+
+
+def _get_forward_origin(message):
+    if message is None:
+        return None
+    origin = getattr(message, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    message_id = getattr(origin, "message_id", None) if origin else None
+    if chat is not None and message_id:
+        return int(chat.id), int(message_id)
+
+    forwarded_chat = getattr(message, "forward_from_chat", None)
+    forwarded_message_id = getattr(message, "forward_from_message_id", None)
+    if forwarded_chat is not None and forwarded_message_id:
+        return int(forwarded_chat.id), int(forwarded_message_id)
+    return None
+
+
+def _record_forwarded_message(message):
+    origin = _get_forward_origin(message)
+    if origin is None:
+        return None
+    state = _workflow_state(message.from_user.id)
+    item = {
+        "source_chat_id": origin[0],
+        "source_message_id": origin[1],
+        "bot_message_id": int(message.id),
+    }
+    recent = [x for x in state["recent"] if not (x["source_chat_id"] == item["source_chat_id"] and x["source_message_id"] == item["source_message_id"])]
+    recent.append(item)
+    state["recent"] = recent[-100:]
+    if state.get("batch_mode"):
+        if state.get("batch_start") is None:
+            state["batch_start"] = item
+        elif state.get("batch_end") is None and int(state["batch_start"]["source_chat_id"]) == int(item["source_chat_id"]):
+            state["batch_end"] = item
+    return item
+
+
+def _same_source_recent(state):
+    if not state.get("recent"):
+        return []
+    source_chat_id = state["recent"][-1]["source_chat_id"]
+    rows = [x for x in state["recent"] if int(x["source_chat_id"]) == int(source_chat_id)]
+    return rows
+
+
+def _reset_workflow(user_id):
+    USER_WORKFLOW[str(int(user_id))] = {"recent": [], "batch_mode": False, "batch_start": None, "batch_end": None}
+'''
+          if '_workflow_state(user_id)' not in s:
+              s = s.replace('def parse_db_message_link(text: str):\n', helpers + '\n\ndef parse_db_message_link(text: str):\n', 1)
+
+          # Record forwarded origin before DB-link resolution in the generic private handler.
+          marker = '''        try:\n            existing_message_id = await resolve_existing_db_message(bot, message)\n'''
+          replacement = '''        forwarded_item = _record_forwarded_message(message)\n\n        try:\n            existing_message_id = await resolve_existing_db_message(bot, message)\n'''
+          if marker in s and 'forwarded_item = _record_forwarded_message(message)' not in s:
+              s = s.replace(marker, replacement, 1)
+
+          command_block_pattern = r'async def _reply_saved_link\(bot, m\):.*?(?=@Bot\.on_message\(filters\.private & filters\.command\("broadcast"))'
+          command_block = r'''async def _reply_saved_link(bot, m):
+    target = m.reply_to_message
+    if target is None:
+        state = _workflow_state(m.from_user.id)
+        if not state.get("recent"):
+            await m.reply_text("Forward a file/message first, then send /genlink.")
+            return
+        try:
+            target = await bot.get_messages(m.chat.id, state["recent"][-1]["bot_message_id"])
+        except Exception:
+            target = None
+    if target is None:
+        await m.reply_text("Forward a file/message first, then send /genlink.")
+        return
+    status = await m.reply_text("⏳ Saving...")
+    await save_media_in_channel(bot, status, target)
+
+
+@Bot.on_message(filters.private & filters.command("genlink"))
+async def genlink(bot, m):
+    await _reply_saved_link(bot, m)
+
+
+async def _run_batch_from_items(bot, m, items):
+    if len(items) < 2:
+        await m.reply_text("Forward the FIRST message and the LAST message from the same channel, then send /batch.")
+        return False
+    source_chat_id = int(items[-1]["source_chat_id"])
+    if any(int(x["source_chat_id"]) != source_chat_id for x in items[-2:]):
+        await m.reply_text("The first and last messages must come from the same channel.")
+        return False
+    start_id = int(items[-2]["source_message_id"])
+    end_id = int(items[-1]["source_message_id"])
+    lo, hi = sorted((start_id, end_id))
+    status = await m.reply_text(f"⏳ Preparing batch: `{lo}` → `{hi}`")
+    await save_batch_media_in_channel(
+        bot,
+        status,
+        list(range(lo, hi + 1)),
+        source_chat_id=source_chat_id,
+        request_user_id=m.from_user.id,
+    )
+    _reset_workflow(m.from_user.id)
+    return True
+
+
+@Bot.on_message(filters.private & filters.command("batch"))
+async def batch(bot, m):
+    state = _workflow_state(m.from_user.id)
+    # Backward-compatible explicit syntax: reply + /batch start_id end_id
+    if len(m.command) >= 3:
+        try:
+            start_id = int(m.command[1])
+            end_id = int(m.command[2])
+        except ValueError:
+            await m.reply_text("Message IDs must be numbers.")
+            return
+        origin = _get_forward_origin(m.reply_to_message) if m.reply_to_message else None
+        source_chat_id = origin[0] if origin else (state["recent"][-1]["source_chat_id"] if state["recent"] else None)
+        if source_chat_id is None:
+            await m.reply_text("Forward one message from the source channel first.")
+            return
+        status = await m.reply_text(f"⏳ Preparing batch: `{min(start_id, end_id)}` → `{max(start_id, end_id)}`")
+        await save_batch_media_in_channel(
+            bot,
+            status,
+            list(range(min(start_id, end_id), max(start_id, end_id) + 1)),
+            source_chat_id=int(source_chat_id),
+            request_user_id=m.from_user.id,
+        )
+        _reset_workflow(m.from_user.id)
+        return
+
+    recent = _same_source_recent(state)
+    if len(recent) >= 2:
+        await _run_batch_from_items(bot, m, recent[-2:])
+        return
+
+    state["batch_mode"] = True
+    if recent and state.get("batch_start") is None:
+        state["batch_start"] = recent[-1]
+        await m.reply_text("✅ FIRST message selected. Now forward the LAST message from the same channel.")
+    else:
+        await m.reply_text("📦 Batch mode started. Forward the FIRST message, then the LAST message from the same channel.")
+
+
+@Bot.on_message(filters.private & filters.command("custom_batch"))
+async def custom_batch(bot, m):
+    state = _workflow_state(m.from_user.id)
+    if len(m.command) >= 2:
+        try:
+            ids = [int(x) for x in m.command[1:]]
+        except ValueError:
+            await m.reply_text("Message IDs must be numbers.")
+            return
+        origin = _get_forward_origin(m.reply_to_message) if m.reply_to_message else None
+        source_chat_id = origin[0] if origin else (state["recent"][-1]["source_chat_id"] if state["recent"] else None)
+        if source_chat_id is None:
+            await m.reply_text("Forward one message from the source channel first.")
+            return
+    else:
+        recent = _same_source_recent(state)
+        if not recent:
+            await m.reply_text("Forward the messages you want to include, then send /custom_batch.")
+            return
+        source_chat_id = int(recent[-1]["source_chat_id"])
+        ids = []
+        for item in recent:
+            if int(item["source_chat_id"]) == source_chat_id and int(item["source_message_id"]) not in ids:
+                ids.append(int(item["source_message_id"]))
+
+    status = await m.reply_text(f"⏳ Saving {len(ids)} selected message(s)...")
+    await save_batch_media_in_channel(
+        bot,
+        status,
+        ids,
+        source_chat_id=int(source_chat_id),
+        request_user_id=m.from_user.id,
+    )
+    _reset_workflow(m.from_user.id)
+
+
+@Bot.on_message(filters.private & filters.command("shortener"))
+async def shortener(bot, m):
+    url = " ".join(m.command[1:]).strip()
+    if not url and m.reply_to_message:
+        url = (m.reply_to_message.text or m.reply_to_message.caption or "").strip()
+    if not url:
+        await m.reply_text("Usage: `/shortener https://example.com/link`")
+        return
+    short = get_short(url)
+    await m.reply_text(f"🔗 **Shortened Link:**\n{short}", disable_web_page_preview=True)
+
+
+@Bot.on_message(filters.private & filters.command("special_link"))
+async def special_link(bot, m):
+    await batch(bot, m)
+
+
+@Bot.on_message(filters.private & filters.command("universal_link"))
+async def universal_link(bot, m):
+    await batch(bot, m)
+
+
+'''
+          s, n = re.subn(command_block_pattern, command_block, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit('bot.py command block replacement failed')
+
+          # Clear workflow state too.
+          s = s.replace(
+              'async def clear_user_batch(_, m: Message):\n    MediaList[str(m.from_user.id)] = []\n    await m.reply_text("Cleared your batch files successfully!")\n',
+              'async def clear_user_batch(_, m: Message):\n    MediaList[str(m.from_user.id)] = []\n    _reset_workflow(m.from_user.id)\n    await m.reply_text("Cleared your batch selection successfully!")\n',
+              1,
+          )
+
+          # Make the old Save-in-Batch button understand forwarded origins.
+          callback_pattern = r'    elif cb_data == "addToBatchTrue":.*?(?=    elif cb_data == "addToBatchFalse":)'
+          callback_repl = r'''    elif cb_data == "addToBatchTrue":
+        reply = cmd.message.reply_to_message
+        origin = _get_forward_origin(reply)
+        if origin is not None:
+            state = _workflow_state(cmd.from_user.id)
+            item = {"source_chat_id": origin[0], "source_message_id": origin[1], "bot_message_id": int(reply.id)}
+            if state.get("batch_start") is None or int(state["batch_start"]["source_chat_id"]) != int(origin[0]):
+                state["batch_start"] = item
+                state["batch_end"] = None
+                await cmd.message.edit(
+                    "✅ First message saved for batch.\n\nForward the LAST message, then press **Get Batch Link**.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Get Batch Link", callback_data="getBatchLink")],
+                        [InlineKeyboardButton("Close Message", callback_data="closeMessage")]
+                    ])
+                )
+                await cmd.answer("First message selected.")
+                return
+            state["batch_end"] = item
+            await cmd.message.edit(
+                "✅ First + last message selected.\n\nPress **Get Batch Link** to generate one link for all messages in between.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Get Batch Link", callback_data="getBatchLink")],
+                    [InlineKeyboardButton("Close Message", callback_data="closeMessage")]
+                ])
+            )
+            await cmd.answer("Last message selected.")
+            return
+
+        if MediaList.get(str(cmd.from_user.id)) is None:
+            MediaList[str(cmd.from_user.id)] = []
+        if reply is None:
+            await cmd.answer("Source file not found.", show_alert=True)
+            return
+        MediaList[str(cmd.from_user.id)].append(reply.id)
+        await cmd.message.edit(
+            "File Saved in Batch!\n\nPress below button to get batch link.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Get Batch Link", callback_data="getBatchLink")],
+                [InlineKeyboardButton("Close Message", callback_data="closeMessage")]
+            ])
+        )
+
+'''
+          s, n = re.subn(callback_pattern, callback_repl, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit('bot.py addToBatchTrue replacement failed')
+
+          callback_pattern2 = r'    elif cb_data == "getBatchLink":.*?(?=    elif cb_data.startswith\("setdel_"\):)'
+          callback_repl2 = r'''    elif cb_data == "getBatchLink":
+        state = _workflow_state(cmd.from_user.id)
+        if state.get("batch_start") and state.get("batch_end"):
+            a = state["batch_start"]
+            b = state["batch_end"]
+            if int(a["source_chat_id"]) != int(b["source_chat_id"]):
+                await cmd.answer("First and last messages must come from the same channel.", show_alert=True)
+                return
+            lo, hi = sorted((int(a["source_message_id"]), int(b["source_message_id"])))
+            await cmd.message.edit("Please wait, generating batch link ...")
+            await save_batch_media_in_channel(
+                bot=bot,
+                editable=cmd.message,
+                message_ids=list(range(lo, hi + 1)),
+                source_chat_id=int(a["source_chat_id"]),
+                request_user_id=cmd.from_user.id,
+            )
+            _reset_workflow(cmd.from_user.id)
+            return
+
+        message_ids = MediaList.get(str(cmd.from_user.id))
+        if not message_ids:
+            await cmd.answer("Batch selection is empty!", show_alert=True)
+            return
+        await cmd.message.edit("Please wait, generating batch link ...")
+        await save_batch_media_in_channel(bot=bot, editable=cmd.message, message_ids=message_ids, request_user_id=cmd.from_user.id)
+        MediaList[str(cmd.from_user.id)] = []
+
+'''
+          s, n = re.subn(callback_pattern2, callback_repl2, s, count=1, flags=re.S)
+          if n != 1:
+              raise SystemExit('bot.py getBatchLink replacement failed')
+
+          # Human-friendly command descriptions.
+          s = s.replace('BotCommand("genlink", "Store a single message or file"),', 'BotCommand("genlink", "Generate link from your last forwarded file"),', 1)
+          s = s.replace('BotCommand("batch", "Store multiple channel messages"),', 'BotCommand("batch", "Forward first and last message for one batch link"),', 1)
+          s = s.replace('BotCommand("custom_batch", "Store selected messages"),', 'BotCommand("custom_batch", "Link all selected forwarded messages"),', 1)
+
+          p.write_text(s, encoding='utf-8')
+          PY
+
+      - name: Validate Python syntax
+        run: python -m py_compile bot.py handlers/*.py configs.py
+
+      - name: Commit and push source changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet; then echo "No changes needed"; exit 0; fi
-          git add bot.py
-          git commit -m "Fix command handlers being blocked by generic private handler"
+          git add bot.py configs.py handlers/save_media.py handlers/send_file.py handlers/telegram_api.py
+          git commit -m "Improve FileStore workflow and HJ delivery format"
           git push
