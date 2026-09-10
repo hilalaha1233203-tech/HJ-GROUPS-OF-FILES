@@ -1,8 +1,6 @@
 name: Fix settings owner authorization
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,39 +13,5 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Fix settings handler and command menu
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          p = Path("bot.py")
-          s = p.read_text(encoding="utf-8")
-
-          old = '''@Bot.on_message(filters.private & filters.command("settings") & filters.user(Config.BOT_OWNER))\nasync def settings(_, m: Message):\n    await show_settings(m)'''
-          new = '''@Bot.on_message(filters.private & filters.command("settings"))\nasync def settings(_, m: Message):\n    # Do not put the owner check in the Pyrogram filter: that silently drops\n    # the command when BOT_OWNER is wrong. Always reply with a useful result.\n    if not Config.BOT_OWNER or int(m.from_user.id) != int(Config.BOT_OWNER):\n        configured = Config.BOT_OWNER if Config.BOT_OWNER else "NOT SET"\n        await m.reply_text(\n            "⛔ **Owner/Admin Only**\\n\\n"\n            f"Your Telegram ID: `{m.from_user.id}`\\n"\n            f"Configured BOT_OWNER: `{configured}`\\n\\n"\n            "If you are the owner, set **BOT_OWNER** in Voroa to your Telegram user ID, then redeploy/restart the bot."\n        )\n        return\n    await show_settings(m)'''
-
-          if old not in s:
-              raise SystemExit("settings handler pattern not found")
-          s = s.replace(old, new, 1)
-
-          old_cmds = '''        BotCommand("start", "Start the bot / open file links"),\n        BotCommand("clear_batch", "Clear your current batch"),\n        BotCommand("status", "Admin: show total users"),\n        BotCommand("broadcast", "Admin: broadcast a replied message"),\n        BotCommand("ban_user", "Admin: ban a user"),\n        BotCommand("unban_user", "Admin: unban a user"),\n        BotCommand("banned_users", "Admin: list banned users"),\n        BotCommand("settings", "Admin: bot settings"),'''
-          new_cmds = '''        BotCommand("start", "Start the bot / open file links"),\n        BotCommand("genlink", "Store a single message or file"),\n        BotCommand("batch", "Store multiple channel messages"),\n        BotCommand("custom_batch", "Store selected messages"),\n        BotCommand("shortener", "Shorten a shareable link"),\n        BotCommand("settings", "Customize bot settings"),\n        BotCommand("clear_batch", "Clear your current batch"),\n        BotCommand("special_link", "Moderator: create an editable link"),\n        BotCommand("universal_link", "Moderator: create a universal link"),\n        BotCommand("broadcast", "Admin: broadcast a replied message"),\n        BotCommand("ban", "Moderator: ban a user"),\n        BotCommand("unban", "Moderator: unban a user"),\n        BotCommand("status", "Admin: show total users"),\n        BotCommand("ban_user", "Admin: ban a user"),\n        BotCommand("unban_user", "Admin: unban a user"),\n        BotCommand("banned_users", "Admin: list banned users"),'''
-          if old_cmds not in s:
-              raise SystemExit("command menu pattern not found")
-          s = s.replace(old_cmds, new_cmds, 1)
-
-          p.write_text(s, encoding="utf-8")
-          PY
-
-      - name: Commit fix
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bot.py
-          if git diff --cached --quiet; then
-            echo "No changes needed."
-            exit 0
-          fi
-          git commit -m "Fix settings owner authorization and command menu"
-          git push
+      - name: Historical settings-owner patch
+        run: echo "Manual-only legacy patch workflow."
