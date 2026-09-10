@@ -92,17 +92,15 @@ Use **Commands** to view all available commands and features.
 ➜ `/settings` — Customize your settings as your need.
 ➜ `/clear_batch` — Clear your current batch selection.
 
-🛡️ **Moderators Commands:**
+🛡️ **Moderator Commands:**
 
 ➜ `/special_link` — Create a batch link using your forwarded selection.
 ➜ `/universal_link` — Create a batch link using your forwarded selection.
 ➜ `/broadcast` — Broadcast a message to users.
-➜ `/ban` — Ban a user.
-➜ `/unban` — Unban a user.
 
-**Admin compatibility commands**
-➜ `/status` — Show total registered users.
-➜ `/ban_user` — Ban a user for a number of days.
-➜ `/unban_user` — Remove a user ban.
+**Admin Commands**
+➜ `/status` — Show total registered users and open the user list.
+➜ `/ban_user` — Ban a user by `@username` for a number of days.
+➜ `/unban_user` — Remove a user ban by `@username`.
 ➜ `/banned_users` — List banned users.
 """
