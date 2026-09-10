@@ -1,26 +1,94 @@
-name: Fix command propagation
+name: One-time storage peer repair
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  patch:
+  repair:
+    if: ${{ !contains(github.event.head_commit.message, '[peer-repair]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply command propagation fix
-        run: python .github/scripts/fix_command_propagation.py
-      - name: Commit and push
+
+      - name: Patch storage peer fallback
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          # bot.py: add Bot API fallback to /start so a fresh Pyrogram session
+          # does not fail permanently on a numeric private-channel peer.
+          p = Path('bot.py')
+          s = p.read_text(encoding='utf-8')
+
+          if 'from handlers.telegram_api import copy_message as api_copy_message' not in s:
+              s = s.replace(
+                  'from handlers.save_media import save_media_in_channel, save_batch_media_in_channel, get_short\n',
+                  'from handlers.save_media import save_media_in_channel, save_batch_media_in_channel, get_short\nfrom handlers.telegram_api import copy_message as api_copy_message, delete_message as api_delete_message\n',
+                  1,
+              )
+
+          old = '        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n'
+          new = '''        try:\n            get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n        except Exception as peer_error:\n            # Fresh Pyrogram in-memory sessions can lose the private channel peer.\n            # Telegram Bot API can copy the stored message directly by numeric ID.\n            try:\n                copied = await api_copy_message(\n                    chat_id=cmd.from_user.id,\n                    from_chat_id=channel_id,\n                    message_id=file_id,\n                    protect_content=False,\n                )\n                copied_text = (copied or {}).get("text", "")\n                ids = copied_text.split() if copied_text else []\n                if ids and all(item.lstrip("-").isdigit() for item in ids):\n                    temp_id = (copied or {}).get("message_id")\n                    if temp_id:\n                        try:\n                            await api_delete_message(cmd.from_user.id, temp_id)\n                        except Exception:\n                            pass\n                    protection = await db.get_protection_settings()\n                    protect = protection["protect_forward"] or protection["protect_download"]\n                    for item in ids:\n                        await api_copy_message(\n                            chat_id=cmd.from_user.id,\n                            from_chat_id=channel_id,\n                            message_id=int(item),\n                            protect_content=protect,\n                        )\n                    return\n                return\n            except Exception:\n                raise peer_error\n'''
+          if old in s and 'Fresh Pyrogram in-memory sessions can lose the private channel peer.' not in s:
+              s = s.replace(old, new, 1)
+
+          p.write_text(s, encoding='utf-8')
+
+          # handlers/save_media.py: Bot API fallback when copying a user's file
+          # into the private storage channel after a fresh deployment.
+          p = Path('handlers/save_media.py')
+          s = p.read_text(encoding='utf-8')
+          if 'from handlers.telegram_api import copy_message as api_copy_message' not in s:
+              s = s.replace(
+                  'from handlers.database import db\n',
+                  'from handlers.database import db\nfrom handlers.telegram_api import copy_message as api_copy_message\n',
+                  1,
+              )
+          old = '''    try:\n        return await message.forward(channel_id)\n    except FloodWait as sl:\n        await asyncio.sleep(sl.value)\n        return await forward_to_channel(bot, message, editable)\n'''
+          new = '''    try:\n        return await message.forward(channel_id)\n    except FloodWait as sl:\n        await asyncio.sleep(sl.value)\n        return await forward_to_channel(bot, message, editable)\n    except Exception:\n        copied = await api_copy_message(\n            chat_id=channel_id,\n            from_chat_id=message.chat.id,\n            message_id=message.id,\n            protect_content=False,\n        )\n        return await bot.get_messages(channel_id, int(copied["message_id"]))\n'''
+          if old in s and 'copied = await api_copy_message(' not in s:
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # handlers/send_file.py: Bot API fallback for delivery from storage.
+          p = Path('handlers/send_file.py')
+          s = p.read_text(encoding='utf-8')
+          if 'from handlers.telegram_api import copy_message as api_copy_message' not in s:
+              s = s.replace(
+                  'from handlers.database import db\n',
+                  'from handlers.database import db\nfrom handlers.telegram_api import copy_message as api_copy_message\n',
+                  1,
+              )
+          marker = '''    except FloodWait as e:\n        await asyncio.sleep(e.value)\n        return await media_forward(bot, user_id, file_id, channel_id)\n'''
+          replacement = '''    except FloodWait as e:\n        await asyncio.sleep(e.value)\n        return await media_forward(bot, user_id, file_id, channel_id)\n    except Exception as pyrogram_error:\n        try:\n            protection = await db.get_protection_settings()\n            protect = protection["protect_forward"] or protection["protect_download"]\n            copied = await api_copy_message(\n                chat_id=user_id,\n                from_chat_id=channel_id,\n                message_id=file_id,\n                protect_content=protect,\n            )\n            return copied\n        except Exception:\n            raise pyrogram_error\n'''
+          if marker in s and 'except Exception as pyrogram_error:' not in s:
+              s = s.replace(marker, replacement, 1)
+          p.write_text(s, encoding='utf-8')
+
+          # Self-disable this one-time workflow after the repair commit.
+          wf = Path('.github/workflows/fix-command-propagation.yml')
+          w = wf.read_text(encoding='utf-8')
+          w = w.replace('  push:\n    branches: [main]\n', '  workflow_dispatch:\n')
+          w = w.replace('  workflow_dispatch:\n  workflow_dispatch:\n', '  workflow_dispatch:\n')
+          wf.write_text(w, encoding='utf-8')
+          PY
+
+      - name: Validate Python syntax
+        run: python -m py_compile bot.py handlers/*.py configs.py
+
+      - name: Commit one-time repair
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet; then echo "No changes needed"; exit 0; fi
-          git add bot.py
-          git commit -m "Fix command handlers being blocked by generic private handler"
+          git add bot.py handlers/send_file.py handlers/save_media.py .github/workflows/fix-command-propagation.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "[peer-repair] Fix private storage peer after redeploy"
           git push
