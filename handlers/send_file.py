@@ -2,72 +2,168 @@
 
 import asyncio
 from pyrogram import Client
-from pyrogram.types import Message
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 from configs import Config
 from handlers.database import db
-from handlers.telegram_api import copy_message as api_copy_message
+from handlers.telegram_api import copy_message as api_copy_message, edit_message_caption as api_edit_message_caption, edit_message_reply_markup as api_edit_message_reply_markup
 
-# Keep strong references to scheduled deletion tasks until they finish.
 _DELETE_TASKS = set()
 
 
-async def reply_forward(message: Message, file_id: int, delay: int):
+def human_size(size):
     try:
-        if delay > 0:
-            minutes = max(1, delay // 60)
-            return await message.reply_text(
-                f"Files will be deleted in {minutes} minute(s). Please forward and save them.",
-                disable_web_page_preview=True,
-                quote=True,
-            )
-        return await message.reply_text(
-            "Files are not scheduled for automatic deletion. Please forward and save them.",
-            disable_web_page_preview=True,
-            quote=True,
-        )
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        return await reply_forward(message, file_id, delay)
+        size = int(size)
+    except Exception:
+        return "Unknown"
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 ** 2:
+        return f"{size / 1024:.2f} KB"
+    if size < 1024 ** 3:
+        return f"{size / (1024 ** 2):.2f} MB"
+    return f"{size / (1024 ** 3):.2f} GB"
+
+
+def _file_meta(message: Message):
+    if message is None:
+        return "Telegram Media", None
+    media = (
+        getattr(message, "document", None)
+        or getattr(message, "audio", None)
+        or getattr(message, "video", None)
+        or getattr(message, "animation", None)
+    )
+    if media is not None:
+        return getattr(media, "file_name", None) or "Telegram Media", getattr(media, "file_size", None)
+    if getattr(message, "photo", None):
+        return "Photo.jpg", getattr(message.photo, "file_size", None)
+    if getattr(message, "voice", None):
+        return "Voice Message.ogg", getattr(message.voice, "file_size", None)
+    return "Telegram Message", None
+
+
+def build_caption(message: Message):
+    name, size = _file_meta(message)
+    return f"File Name : {name}\n\nFile size : {human_size(size)}\n\n{Config.DELIVERY_TAG}"
+
+
+def _url(value):
+    value = str(value or "").strip()
+    if not value:
+        return None
+    if value.startswith("https://") or value.startswith("http://"):
+        return value
+    if value.startswith("@"):
+        return f"https://t.me/{value[1:]}"
+    return None
+
+
+def build_channel_buttons():
+    rows = []
+    for label, value in (
+        ("Main Channel", Config.MAIN_CHANNEL),
+        ("Backup Channel", Config.BACKUP_CHANNEL),
+        ("Pocket Library", Config.POCKET_LIBRARY),
+    ):
+        url = _url(value)
+        if url:
+            rows.append([InlineKeyboardButton(label, url=url)])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def build_channel_buttons_json():
+    rows = []
+    for label, value in (
+        ("Main Channel", Config.MAIN_CHANNEL),
+        ("Backup Channel", Config.BACKUP_CHANNEL),
+        ("Pocket Library", Config.POCKET_LIBRARY),
+    ):
+        url = _url(value)
+        if url:
+            rows.append([{"text": label, "url": url}])
+    return {"inline_keyboard": rows} if rows else None
+
+
+def format_delete_time(seconds):
+    try:
+        seconds = int(seconds)
+    except Exception:
+        return "the selected time"
+    if seconds <= 0:
+        return None
+    if seconds % 3600 == 0:
+        value = seconds // 3600
+        return f"{value} hour" + ("s" if value != 1 else "")
+    if seconds % 60 == 0:
+        value = seconds // 60
+        return f"{value} minute" + ("s" if value != 1 else "")
+    return f"{seconds} second" + ("s" if seconds != 1 else "")
+
+
+def build_delete_notice(delay):
+    human = format_delete_time(delay)
+    if not human:
+        return None
+    return (
+        "❗️❗️❗️𝕀𝕄ℙ𝕆ℝ𝕋𝔸ℕ𝕋❗️️❗️❗️\n\n"
+        f'ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ᴡɪʟʟ ʙᴇ ᴅᴇʟᴇᴛᴇᴅ ɪɴ "{human}" ⏳ (ᴅᴜᴇ ᴛᴏ ᴄᴏᴘʏʀɪɢʜᴛ ɪꜱꜱᴜᴇꜱ)🤕.\n\n'
+        f'ᴘʟᴇᴀꜱᴇ ʟɪꜱᴛᴇɴ ᴛʜɪꜱ ᴍᴇꜱꜱᴀɢᴇ ʙᴇꜰᴏʀᴇ "{human}" ᴛᴏ ᴀᴠᴏɪᴅ ʟᴏꜱɪɴɢ...\n\n'
+        "𝕋𝕙𝕒𝕟𝕜 𝕐𝕠𝕦 𝔽𝕠𝕣 ℂ𝕙𝕠𝕠𝕤𝕚𝕟𝕘 ℍ𝕁 𝔾𝕣𝕠𝕦𝕡𝕤🔮"
+    )
+
+
+async def _safe_get_source(bot, channel_id, file_id):
+    try:
+        return await bot.get_messages(chat_id=channel_id, message_ids=file_id)
+    except Exception:
+        return None
 
 
 async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None):
-    try:
-        channel_id = channel_id or await db.get_db_channel_id()
-        if channel_id is None:
-            raise RuntimeError("Storage channel is not configured.")
+    channel_id = channel_id or await db.get_db_channel_id()
+    if channel_id is None:
+        raise RuntimeError("Storage channel is not configured.")
 
-        # Telegram's protected-content flag is the only Bot API mechanism that
-        # disables forwarding/saving/download actions for delivered media.
-        # When the admin enables either protection setting, enable it on the
-        # actual delivered message (not the storage-channel copy).
-        protect_content = await db.get_protect_content()
-        if Config.FORWARD_AS_COPY:
-            return await bot.copy_message(
-                chat_id=user_id,
-                from_chat_id=channel_id,
-                message_id=file_id,
-                protect_content=protect_content,
-            )
-        return await bot.forward_messages(
+    protect_content = await db.get_protect_content()
+    source = await _safe_get_source(bot, channel_id, file_id)
+    caption = build_caption(source) if source else None
+    reply_markup = build_channel_buttons()
+
+    try:
+        return await bot.copy_message(
             chat_id=user_id,
             from_chat_id=channel_id,
-            message_ids=file_id,
+            message_id=file_id,
+            caption=caption,
             protect_content=protect_content,
+            reply_markup=reply_markup,
         )
     except FloodWait as e:
         await asyncio.sleep(e.value)
         return await media_forward(bot, user_id, file_id, channel_id)
     except Exception as pyrogram_error:
         try:
-            protection = await db.get_protection_settings()
-            protect = protection["protect_forward"] or protection["protect_download"]
-            return await api_copy_message(
+            copied = await api_copy_message(
                 chat_id=user_id,
                 from_chat_id=channel_id,
                 message_id=file_id,
-                protect_content=protect,
+                protect_content=protect_content,
             )
+            copied_id = (copied or {}).get("message_id")
+            if copied_id and caption:
+                try:
+                    await api_edit_message_caption(user_id, copied_id, caption)
+                except Exception:
+                    pass
+            if copied_id:
+                buttons = build_channel_buttons_json()
+                if buttons:
+                    try:
+                        await api_edit_message_reply_markup(user_id, copied_id, buttons)
+                    except Exception:
+                        pass
+            return copied
         except Exception:
             raise pyrogram_error
 
@@ -91,28 +187,43 @@ def _track_delete_task(task):
     task.add_done_callback(_DELETE_TASKS.discard)
 
 
-async def send_media_and_reply(bot: Client, user_id: int, file_id: int, channel_id=None):
+async def send_delete_notice(bot: Client, user_id: int, delay: int):
+    text = build_delete_notice(delay)
+    if not text:
+        return None
+    try:
+        return await bot.send_message(chat_id=user_id, text=text, disable_web_page_preview=True)
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        return await send_delete_notice(bot, user_id, delay)
+
+
+async def send_media_and_reply(
+    bot: Client,
+    user_id: int,
+    file_id: int,
+    channel_id=None,
+    show_notice=True,
+    schedule_delete=True,
+):
     sent_message = await media_forward(bot, user_id, file_id, channel_id)
     if sent_message is None:
-        return
+        return []
 
-    # Pyrogram can return a Message or a list/tuple depending on the method.
-    if isinstance(sent_message, (list, tuple)):
-        delivered = [m for m in sent_message if m is not None]
-    else:
-        delivered = [sent_message]
+    delivered = [m for m in sent_message] if isinstance(sent_message, (list, tuple)) else [sent_message]
+    message_ids = [
+        getattr(m, "id", None) if not isinstance(m, dict) else m.get("message_id")
+        for m in delivered
+    ]
 
     delay = await db.get_auto_delete_seconds()
-    message_ids = [getattr(m, "id", None) for m in delivered]
+    if show_notice:
+        notice = await send_delete_notice(bot, user_id, delay)
+        if notice is not None:
+            message_ids.append(getattr(notice, "id", None))
 
-    # Keep the countdown notice separate, then remove both the media and notice
-    # after the configured delay. This makes the setting observable to users.
-    notice = await reply_forward(delivered[0], file_id, delay)
-    if notice is not None:
-        message_ids.append(getattr(notice, "id", None))
-
-    if delay > 0:
-        task = asyncio.create_task(
-            _delete_delivered_messages(bot, user_id, message_ids, delay)
-        )
+    if schedule_delete and delay > 0:
+        task = asyncio.create_task(_delete_delivered_messages(bot, user_id, message_ids, delay))
         _track_delete_task(task)
+
+    return delivered
