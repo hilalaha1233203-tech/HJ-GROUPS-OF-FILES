@@ -20,6 +20,14 @@ from handlers.save_media import save_media_in_channel, save_batch_media_in_chann
 
 MediaList = {}
 
+# Do not let the generic private media/text handler intercept commands.
+FILESTORE_COMMANDS = [
+    "start", "genlink", "batch", "custom_batch", "shortener",
+    "settings", "clear_batch", "special_link", "universal_link",
+    "broadcast", "ban", "unban", "status", "ban_user",
+    "unban_user", "banned_users",
+]
+
 Bot = Client(
     name=Config.BOT_USERNAME,
     in_memory=True,
@@ -67,7 +75,6 @@ async def resolve_existing_db_message(bot: Client, message: Message):
         if db_channel_id is None:
             if int(message.from_user.id) != int(Config.BOT_OWNER):
                 return None
-            # First owner-forward automatically configures the storage channel.
             await bot.get_chat(source_channel_id)
             await db.set_db_channel_id(source_channel_id)
             return int(forwarded_message_id)
@@ -186,11 +193,10 @@ async def start(bot: Client, cmd: Message):
 @Bot.on_message(
     (filters.document | filters.video | filters.audio | filters.photo | filters.text)
     & filters.private
+    & ~filters.command(FILESTORE_COMMANDS)
 )
 async def main(bot: Client, message: Message):
     if message.chat.type == enums.ChatType.PRIVATE:
-        await add_user_to_database(bot, message)
-
         if message.from_user.id in Config.BANNED_USERS:
             await message.reply_text(
                 "Sorry, You are banned!\n\nContact the bot owner for help.",
@@ -229,8 +235,6 @@ async def main(bot: Client, message: Message):
                 disable_web_page_preview=True
             )
 
-        # Let command-specific handlers (/settings, /genlink, /batch, etc.)
-        # receive private text messages after this generic handler inspects them.
         await message.continue_propagation()
 
     elif message.chat.type == enums.ChatType.CHANNEL:
@@ -258,7 +262,7 @@ async def main(bot: Client, message: Message):
         try:
             channel_id = await db.get_db_channel_id()
             if channel_id is None:
-                raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")
+                raise RuntimeError("Storage channel is not configured. Forward one message from the private storage channel to the bot first.")
             forwarded_msg = await message.forward(channel_id)
             file_er_id = str(forwarded_msg.id)
             share_link = make_share_link(int(file_er_id), channel_id)
@@ -401,8 +405,6 @@ async def broadcast_handler_open(_, m: Message):
 
 @Bot.on_message(filters.private & filters.command("settings"))
 async def settings(_, m: Message):
-    # Do not put the owner check in the Pyrogram filter: that silently drops
-    # the command when BOT_OWNER is wrong. Always reply with a useful result.
     if not Config.BOT_OWNER or int(m.from_user.id) != int(Config.BOT_OWNER):
         configured = Config.BOT_OWNER if Config.BOT_OWNER else "NOT SET"
         await m.reply_text(
@@ -675,22 +677,19 @@ async def button(bot: Client, cmd: CallbackQuery):
 
 
 async def validate_db_channel_access():
-    """Resolve the DB channel at startup so private-channel peer problems are detected early."""
+    """Resolve the persisted storage channel without making startup depend on a stale env value."""
     try:
-        chat = await Bot.get_chat(Config.DB_CHANNEL)
+        channel_id = await db.get_db_channel_id()
+        if channel_id is None:
+            print("[DB_CHANNEL] No storage channel configured yet; waiting for owner recovery/link input.")
+            return False
+        chat = await Bot.get_chat(int(channel_id))
         print(
             f"[DB_CHANNEL] Connected: id={chat.id} title={getattr(chat, 'title', '')!r}"
         )
         return True
     except Exception as err:
-        print(
-            "[DB_CHANNEL] ERROR: Unable to access the configured Database Channel "
-            f"{Config.DB_CHANNEL}: {err}"
-        )
-        print(
-            "[DB_CHANNEL] The bot must be a member/admin of that private channel "
-            "and the DB_CHANNEL value must be the correct -100... channel ID."
-        )
+        print(f"[DB_CHANNEL] ERROR: Unable to access the stored Database Channel: {err}")
         return False
 
 
@@ -702,7 +701,6 @@ async def recover_storage_channels():
         stored = []
     if Config.DB_CHANNEL:
         stored.append(int(Config.DB_CHANNEL))
-    # Legacy HJ storage channel used by existing permanent links.
     stored.append(-1004394820141)
     seen=[]
     for cid in stored:
