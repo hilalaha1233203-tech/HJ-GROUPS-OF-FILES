@@ -7,25 +7,27 @@ from pyrogram.errors import FloodWait
 from configs import Config
 from handlers.database import db
 
+# Keep strong references to scheduled deletion tasks until they finish.
+_DELETE_TASKS = set()
+
 
 async def reply_forward(message: Message, file_id: int, delay: int):
     try:
         if delay > 0:
             minutes = max(1, delay // 60)
-            await message.reply_text(
+            return await message.reply_text(
                 f"Files will be deleted in {minutes} minute(s). Please forward and save them.",
                 disable_web_page_preview=True,
                 quote=True,
             )
-        else:
-            await message.reply_text(
-                "Files are not scheduled for automatic deletion. Please forward and save them.",
-                disable_web_page_preview=True,
-                quote=True,
-            )
+        return await message.reply_text(
+            "Files are not scheduled for automatic deletion. Please forward and save them.",
+            disable_web_page_preview=True,
+            quote=True,
+        )
     except FloodWait as e:
         await asyncio.sleep(e.value)
-        await reply_forward(message, file_id, delay)
+        return await reply_forward(message, file_id, delay)
 
 
 async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None):
@@ -34,6 +36,10 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
         if channel_id is None:
             raise RuntimeError("Storage channel is not configured.")
 
+        # Telegram's protected-content flag is the only Bot API mechanism that
+        # disables forwarding/saving/download actions for delivered media.
+        # When the admin enables either protection setting, enable it on the
+        # actual delivered message (not the storage-channel copy).
         protect_content = await db.get_protect_content()
         if Config.FORWARD_AS_COPY:
             return await bot.copy_message(
@@ -53,21 +59,47 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
         return await media_forward(bot, user_id, file_id, channel_id)
 
 
-async def delete_after_delay(message, delay):
-    if delay <= 0:
-        return
+async def _delete_delivered_messages(bot: Client, chat_id: int, message_ids, delay: int):
     try:
         await asyncio.sleep(delay)
-        await message.delete()
+        clean_ids = [int(mid) for mid in message_ids if mid]
+        if clean_ids:
+            await bot.delete_messages(chat_id=int(chat_id), message_ids=clean_ids, revoke=True)
+            print(f"[AUTO_DELETE] Deleted chat={chat_id} messages={clean_ids}")
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        await _delete_delivered_messages(bot, chat_id, message_ids, 0)
     except Exception as err:
-        print(f"Auto-delete failed: {err}")
+        print(f"[AUTO_DELETE] Failed chat={chat_id} messages={message_ids}: {err}")
+
+
+def _track_delete_task(task):
+    _DELETE_TASKS.add(task)
+    task.add_done_callback(_DELETE_TASKS.discard)
 
 
 async def send_media_and_reply(bot: Client, user_id: int, file_id: int, channel_id=None):
     sent_message = await media_forward(bot, user_id, file_id, channel_id)
     if sent_message is None:
         return
+
+    # Pyrogram can return a Message or a list/tuple depending on the method.
+    if isinstance(sent_message, (list, tuple)):
+        delivered = [m for m in sent_message if m is not None]
+    else:
+        delivered = [sent_message]
+
     delay = await db.get_auto_delete_seconds()
-    await reply_forward(sent_message, file_id, delay)
+    message_ids = [getattr(m, "id", None) for m in delivered]
+
+    # Keep the countdown notice separate, then remove both the media and notice
+    # after the configured delay. This makes the setting observable to users.
+    notice = await reply_forward(delivered[0], file_id, delay)
+    if notice is not None:
+        message_ids.append(getattr(notice, "id", None))
+
     if delay > 0:
-        asyncio.create_task(delete_after_delay(sent_message, delay))
+        task = asyncio.create_task(
+            _delete_delivered_messages(bot, user_id, message_ids, delay)
+        )
+        _track_delete_task(task)
