@@ -257,7 +257,7 @@ async def main(bot: Client, message: Message):
                 raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")
             forwarded_msg = await message.forward(channel_id)
             file_er_id = str(forwarded_msg.id)
-            share_link = make_share_link(int(file_er_id), channel_id)
+            share_link = make_share_link(int(file_er_id))
             ch_edit = await bot.edit_message_reply_markup(
                 message.chat.id,
                 message.id,
@@ -390,11 +390,8 @@ async def unban_alias(bot, m):
     await m.reply_text("✅ User unbanned.")
 
 
-@Bot.on_message(filters.private & filters.command("broadcast") & filters.reply)
+@Bot.on_message(filters.private & filters.command("broadcast") & filters.user(Config.BOT_OWNER) & filters.reply)
 async def broadcast_handler_open(_, m: Message):
-    if int(m.from_user.id) != int(Config.BOT_OWNER):
-        await m.reply_text("⛔ **Owner/Admin Only**")
-        return
     await main_broadcast_handler(m, db)
 
 
@@ -442,20 +439,14 @@ async def show_settings(message):
     )
 
 
-@Bot.on_message(filters.private & filters.command("status"))
+@Bot.on_message(filters.private & filters.command("status") & filters.user(Config.BOT_OWNER))
 async def sts(_, m: Message):
-    if int(m.from_user.id) != int(Config.BOT_OWNER):
-        await m.reply_text("⛔ **Owner/Admin Only**")
-        return
     total_users = await db.total_users_count()
     await m.reply_text(text=f"**Total Users in DB:** `{total_users}`", quote=True)
 
 
-@Bot.on_message(filters.private & filters.command("ban_user"))
+@Bot.on_message(filters.private & filters.command("ban_user") & filters.user(Config.BOT_OWNER))
 async def ban(c: Client, m: Message):
-    if int(m.from_user.id) != int(Config.BOT_OWNER):
-        await m.reply_text("⛔ **Owner/Admin Only**")
-        return
     if len(m.command) < 4:
         await m.reply_text(
             "Usage: `/ban_user user_id ban_duration ban_reason`\n\n"
@@ -482,11 +473,8 @@ async def ban(c: Client, m: Message):
         await m.reply_text(f"Error occurred! Traceback given below\n\n`{traceback.format_exc()}`", quote=True)
 
 
-@Bot.on_message(filters.private & filters.command("unban_user"))
+@Bot.on_message(filters.private & filters.command("unban_user") & filters.user(Config.BOT_OWNER))
 async def unban(c: Client, m: Message):
-    if int(m.from_user.id) != int(Config.BOT_OWNER):
-        await m.reply_text("⛔ **Owner/Admin Only**")
-        return
     if len(m.command) < 2:
         await m.reply_text("Usage: `/unban_user user_id`", quote=True)
         return
@@ -504,11 +492,8 @@ async def unban(c: Client, m: Message):
         await m.reply_text(f"Error occurred! Traceback given below\n\n`{traceback.format_exc()}`", quote=True)
 
 
-@Bot.on_message(filters.private & filters.command("banned_users"))
+@Bot.on_message(filters.private & filters.command("banned_users") & filters.user(Config.BOT_OWNER))
 async def _banned_users(_, m: Message):
-    if int(m.from_user.id) != int(Config.BOT_OWNER):
-        await m.reply_text("⛔ **Owner/Admin Only**")
-        return
     all_banned_users = await db.get_all_banned_users()
     banned_usr_count = 0
     text = ''
@@ -713,10 +698,6 @@ async def recover_storage_channels():
         stored = []
     if Config.DB_CHANNEL:
         stored.append(int(Config.DB_CHANNEL))
-    # Legacy HJ storage channel used by existing permanent links.
-    stored.append(-1004394820141)
-    # Legacy HJ storage channel used by existing permanent links.
-    stored.append(-1004394820141)
     seen=[]
     for cid in stored:
         if cid in seen:
