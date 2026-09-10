@@ -17,8 +17,36 @@ from handlers.helpers import b64_to_str, str_to_b64
 from handlers.check_user_status import handle_user_status
 from handlers.broadcast_handlers import main_broadcast_handler
 from handlers.save_media import save_media_in_channel, save_batch_media_in_channel, get_short
+from handlers.telegram_api import copy_message as api_copy_message, delete_message as api_delete_message, send_message as api_send_message
 
 MediaList = {}
+
+_API_DELETE_TASKS = set()
+
+
+def _track_api_delete_task(task):
+    _API_DELETE_TASKS.add(task)
+    task.add_done_callback(_API_DELETE_TASKS.discard)
+
+
+async def _delete_api_messages(chat_id, message_ids, delay):
+    try:
+        await asyncio.sleep(delay)
+        for message_id in message_ids:
+            try:
+                await api_delete_message(chat_id, int(message_id))
+            except Exception as err:
+                print(f"[AUTO_DELETE_API] Failed chat={chat_id} message={message_id}: {err}")
+    except Exception as err:
+        print(f"[AUTO_DELETE_API] Timer failed chat={chat_id}: {err}")
+
+
+def _schedule_api_delete(chat_id, message_ids, delay):
+    if delay <= 0:
+        return
+    task = asyncio.create_task(_delete_api_messages(chat_id, message_ids, delay))
+    _track_api_delete_task(task)
+
 
 # Do not let the generic private media/text handler intercept commands.
 FILESTORE_COMMANDS = [
@@ -172,7 +200,79 @@ async def start(bot: Client, cmd: Message):
             channel_id = await db.get_db_channel_id()
         if channel_id is None:
             raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")
-        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)
+        try:
+            get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)
+        except Exception as peer_error:
+            # Bot API copyMessage works with the private channel numeric ID even
+            # when a fresh Pyrogram in-memory session has no cached peer.
+            try:
+                protection = await db.get_protection_settings()
+                protect = protection["protect_forward"] or protection["protect_download"]
+                delay = await db.get_auto_delete_seconds()
+
+                # Copy the link payload/index temporarily so batch links can be
+                # inspected without downloading anything through this server.
+                index_copy = await api_copy_message(
+                    chat_id=cmd.from_user.id,
+                    from_chat_id=channel_id,
+                    message_id=file_id,
+                    protect_content=False,
+                )
+                copied_text = (index_copy or {}).get("text", "").strip()
+                temporary_id = (index_copy or {}).get("message_id")
+
+                if copied_text:
+                    ids = copied_text.split()
+                    if ids and all(item.lstrip("-").isdigit() for item in ids):
+                        if temporary_id:
+                            try:
+                                await api_delete_message(cmd.from_user.id, temporary_id)
+                            except Exception:
+                                pass
+
+                        delivered_ids = []
+                        for item in ids:
+                            delivered = await api_copy_message(
+                                chat_id=cmd.from_user.id,
+                                from_chat_id=channel_id,
+                                message_id=int(item),
+                                protect_content=protect,
+                            )
+                            delivered_id = (delivered or {}).get("message_id")
+                            if delivered_id:
+                                delivered_ids.append(delivered_id)
+
+                        notice = await api_send_message(
+                            chat_id=cmd.from_user.id,
+                            text=(f"Files will be deleted in {max(1, delay // 60)} minute(s). Please forward and save them."
+                                  if delay > 0 else
+                                  "Files are not scheduled for automatic deletion. Please forward and save them."),
+                            disable_web_page_preview=True,
+                        )
+                        if notice and notice.get("message_id"):
+                            delivered_ids.append(notice["message_id"])
+                        _schedule_api_delete(cmd.from_user.id, delivered_ids, delay)
+                        return
+
+                # Normal single-file link. The temporary copy is already the
+                # actual delivered file, so keep it and schedule deletion.
+                delivered_id = (index_copy or {}).get("message_id")
+                if not delivered_id:
+                    raise RuntimeError("Telegram Bot API returned no message ID")
+                notice = await api_send_message(
+                    chat_id=cmd.from_user.id,
+                    text=(f"Files will be deleted in {max(1, delay // 60)} minute(s). Please forward and save them."
+                          if delay > 0 else
+                          "Files are not scheduled for automatic deletion. Please forward and save them."),
+                    disable_web_page_preview=True,
+                )
+                delete_ids = [delivered_id]
+                if notice and notice.get("message_id"):
+                    delete_ids.append(notice["message_id"])
+                _schedule_api_delete(cmd.from_user.id, delete_ids, delay)
+                return
+            except Exception:
+                raise peer_error
         message_ids = []
         if get_message.text:
             message_ids = [x for x in get_message.text.split() if x]

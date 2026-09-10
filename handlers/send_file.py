@@ -6,6 +6,7 @@ from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 from configs import Config
 from handlers.database import db
+from handlers.telegram_api import copy_message as api_copy_message
 
 # Keep strong references to scheduled deletion tasks until they finish.
 _DELETE_TASKS = set()
@@ -57,6 +58,18 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
     except FloodWait as e:
         await asyncio.sleep(e.value)
         return await media_forward(bot, user_id, file_id, channel_id)
+    except Exception as pyrogram_error:
+        try:
+            protection = await db.get_protection_settings()
+            protect = protection["protect_forward"] or protection["protect_download"]
+            return await api_copy_message(
+                chat_id=user_id,
+                from_chat_id=channel_id,
+                message_id=file_id,
+                protect_content=protect,
+            )
+        except Exception:
+            raise pyrogram_error
 
 
 async def _delete_delivered_messages(bot: Client, chat_id: int, message_ids, delay: int):

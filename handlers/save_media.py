@@ -10,6 +10,7 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 from handlers.helpers import str_to_b64
 from handlers.database import db
+from handlers.telegram_api import copy_message as api_copy_message
 
 
 def generate_random_alphanumeric():
@@ -53,6 +54,16 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
     except FloodWait as sl:
         await asyncio.sleep(sl.value)
         return await forward_to_channel(bot, message, editable)
+    except Exception as pyrogram_error:
+        try:
+            return await api_copy_message(
+                chat_id=channel_id,
+                from_chat_id=message.chat.id,
+                message_id=message.id,
+                protect_content=False,
+            )
+        except Exception:
+            raise pyrogram_error
 
 
 async def save_batch_media_in_channel(bot: Client, editable: Message, message_ids: list):
@@ -69,7 +80,9 @@ async def save_batch_media_in_channel(bot: Client, editable: Message, message_id
             sent_message = await forward_to_channel(bot, message, editable)
             if sent_message is None:
                 continue
-            message_ids_str += f"{str(sent_message.id)} "
+            saved_id = sent_message.id if hasattr(sent_message, "id") else sent_message.get("message_id")
+            if saved_id:
+                message_ids_str += f"{str(saved_id)} "
             await asyncio.sleep(2)
 
         if not message_ids_str.strip():
