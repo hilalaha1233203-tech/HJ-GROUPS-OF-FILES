@@ -46,7 +46,14 @@ class Database:
         return {"id": int(id), "join_date": datetime.date.today().isoformat(), "is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}
 
     async def add_user(self, id):
-        await self._execute(lambda: self.client.table(self.table).upsert(self.new_user(id), on_conflict="id").execute())
+        try:
+            await self._execute(lambda: self.client.table(self.table).upsert(self.new_user(id), on_conflict="id").execute())
+        except Exception as err:
+            print(f"[USER_DB] Extended users schema unavailable, using legacy columns: {err}")
+            await self._execute(lambda: self.client.table(self.table).upsert(
+                {"id": int(id), "join_date": datetime.date.today().isoformat()},
+                on_conflict="id"
+            ).execute())
 
     async def is_user_exist(self, id):
         response = await self._execute(lambda: self.client.table(self.table).select("id").eq("id", int(id)).limit(1).execute())
@@ -74,10 +81,16 @@ class Database:
         await self._execute(lambda: self.client.table(self.table).update({"is_banned": True, "ban_duration": int(ban_duration), "banned_on": datetime.date.today().isoformat(), "ban_reason": str(ban_reason)}).eq("id", int(user_id)).execute())
 
     async def get_ban_status(self, id):
-        response = await self._execute(lambda: self.client.table(self.table).select("is_banned,ban_duration,banned_on,ban_reason").eq("id", int(id)).limit(1).execute())
-        if not response.data:
+        try:
+            response = await self._execute(lambda: self.client.table(self.table).select(
+                "is_banned,ban_duration,banned_on,ban_reason"
+            ).eq("id", int(id)).limit(1).execute())
+            if not response.data:
+                return {"is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}
+            return self._ban_status(response.data[0])
+        except Exception as err:
+            print(f"[USER_DB] Ban columns unavailable: {err}")
             return {"is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}
-        return self._ban_status(response.data[0])
 
     async def get_all_banned_users(self):
         response = await self._execute(lambda: self.client.table(self.table).select("id,is_banned,ban_duration,banned_on,ban_reason,join_date").eq("is_banned", True).order("id").execute())
