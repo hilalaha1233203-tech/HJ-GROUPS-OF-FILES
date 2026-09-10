@@ -715,6 +715,8 @@ async def recover_storage_channels():
         stored.append(int(Config.DB_CHANNEL))
     # Legacy HJ storage channel used by existing permanent links.
     stored.append(-1004394820141)
+    # Legacy HJ storage channel used by existing permanent links.
+    stored.append(-1004394820141)
     seen=[]
     for cid in stored:
         if cid in seen:
