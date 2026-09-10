@@ -390,8 +390,11 @@ async def unban_alias(bot, m):
     await m.reply_text("✅ User unbanned.")
 
 
-@Bot.on_message(filters.private & filters.command("broadcast") & filters.user(Config.BOT_OWNER) & filters.reply)
+@Bot.on_message(filters.private & filters.command("broadcast") & filters.reply)
 async def broadcast_handler_open(_, m: Message):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
+        await m.reply_text("⛔ **Owner/Admin Only**")
+        return
     await main_broadcast_handler(m, db)
 
 
@@ -439,14 +442,20 @@ async def show_settings(message):
     )
 
 
-@Bot.on_message(filters.private & filters.command("status") & filters.user(Config.BOT_OWNER))
+@Bot.on_message(filters.private & filters.command("status"))
 async def sts(_, m: Message):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
+        await m.reply_text("⛔ **Owner/Admin Only**")
+        return
     total_users = await db.total_users_count()
     await m.reply_text(text=f"**Total Users in DB:** `{total_users}`", quote=True)
 
 
-@Bot.on_message(filters.private & filters.command("ban_user") & filters.user(Config.BOT_OWNER))
+@Bot.on_message(filters.private & filters.command("ban_user"))
 async def ban(c: Client, m: Message):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
+        await m.reply_text("⛔ **Owner/Admin Only**")
+        return
     if len(m.command) < 4:
         await m.reply_text(
             "Usage: `/ban_user user_id ban_duration ban_reason`\n\n"
@@ -473,8 +482,11 @@ async def ban(c: Client, m: Message):
         await m.reply_text(f"Error occurred! Traceback given below\n\n`{traceback.format_exc()}`", quote=True)
 
 
-@Bot.on_message(filters.private & filters.command("unban_user") & filters.user(Config.BOT_OWNER))
+@Bot.on_message(filters.private & filters.command("unban_user"))
 async def unban(c: Client, m: Message):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
+        await m.reply_text("⛔ **Owner/Admin Only**")
+        return
     if len(m.command) < 2:
         await m.reply_text("Usage: `/unban_user user_id`", quote=True)
         return
@@ -492,8 +504,11 @@ async def unban(c: Client, m: Message):
         await m.reply_text(f"Error occurred! Traceback given below\n\n`{traceback.format_exc()}`", quote=True)
 
 
-@Bot.on_message(filters.private & filters.command("banned_users") & filters.user(Config.BOT_OWNER))
+@Bot.on_message(filters.private & filters.command("banned_users"))
 async def _banned_users(_, m: Message):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
+        await m.reply_text("⛔ **Owner/Admin Only**")
+        return
     all_banned_users = await db.get_all_banned_users()
     banned_usr_count = 0
     text = ''
