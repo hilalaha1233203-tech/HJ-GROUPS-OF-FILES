@@ -211,6 +211,20 @@ class Database:
             f"set setting {key}",
         )
 
+    async def ensure_default_protection(self):
+        """Enable saving/download protection for fresh installations.
+
+        Existing explicit settings are respected, so an admin who intentionally
+        disabled protection is not silently overridden on every restart.
+        """
+        try:
+            marker = await self._get_setting("protect_download", None)
+            if marker is None:
+                await self._set_setting("protect_download", "true")
+                print("[PROTECTION] Default saving/download protection enabled")
+        except Exception as err:
+            print(f"[PROTECTION] Could not initialize download protection: {err}")
+
     async def get_db_channel_id(self):
         # Supabase is the persistent source of truth. DB_CHANNEL is only a bootstrap
         # fallback so a stale Voroa environment variable cannot override saved channels.
@@ -282,7 +296,7 @@ class Database:
                 await self._get_setting("protect_forward", "false")
             ).lower() == "true",
             "protect_download": str(
-                await self._get_setting("protect_download", "false")
+                await self._get_setting("protect_download", "true")
             ).lower() == "true",
         }
 
