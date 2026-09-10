@@ -6,6 +6,7 @@ import re
 import secrets
 import requests
 from pyrogram import filters, StopPropagation
+from pyrogram.errors import PeerIdInvalid
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import bot_legacy
 from configs import Config
@@ -76,6 +77,34 @@ def _caption_text(message, template):
     for k,v in vals.items(): template=template.replace("{"+k+"}",str(v))
     return template[:1024]
 async def _caption(message): return _caption_text(message, await _get("custom_caption", ""))
+
+async def _ensure_peer(bot, chat_id):
+    """Make sure a Telegram peer is present in Pyrogram's cache after restarts."""
+    chat_id = int(chat_id)
+    try:
+        await bot.resolve_peer(chat_id)
+        return chat_id
+    except PeerIdInvalid:
+        pass
+    except Exception:
+        pass
+
+    # This bot uses an in-memory Pyrogram session. After a restart/redeploy the
+    # peer cache is empty. get_dialogs() refreshes Telegram peers and stores the
+    # channel access_hash required by get_messages/copy_message.
+    try:
+        async for dialog in bot.get_dialogs():
+            chat = getattr(dialog, "chat", None)
+            if chat is not None and int(chat.id) == chat_id:
+                await bot.resolve_peer(chat_id)
+                return chat_id
+    except Exception as exc:
+        raise RuntimeError(f"Could not refresh Telegram peers: {exc}") from exc
+
+    raise RuntimeError(
+        f"Telegram source channel {chat_id} is not available to this bot session. "
+        "Make sure the bot is still a member/admin of that private channel."
+    )
 
 async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
     channel_id=channel_id or await db.get_db_channel_id()
@@ -212,7 +241,7 @@ async def direct_cmd(bot,m):
         if ref: chat_id,mid=ref
         elif len(a)==2: chat_id=int(a[0]) if a[0].lstrip("-").isdigit() else int((await bot.get_chat(a[0])).id); mid=int(a[1])
         else: raise ValueError("Use /direct <channel> <message_id> or reply to a forwarded channel message.")
-        await bot.get_chat(chat_id); await m.reply_text(f"✅ **Direct Link Generated**\n\n{await shorten(await _direct_single(chat_id,mid))}",disable_web_page_preview=True)
+        await _ensure_peer(bot,chat_id); await m.reply_text(f"✅ **Direct Link Generated**\n\n{await shorten(await _direct_single(chat_id,mid))}",disable_web_page_preview=True)
     except Exception as exc: await m.reply_text(f"❌ `{exc}`")
     raise StopPropagation
 
@@ -224,7 +253,7 @@ async def direct_batch_cmd(bot,m):
         if len(a)!=3: raise ValueError("Use /direct_batch <channel> <start_message_id> <end_message_id>")
         chat_id=int(a[0]) if a[0].lstrip("-").isdigit() else int((await bot.get_chat(a[0])).id); start,end=sorted((int(a[1]),int(a[2])))
         if end-start>1000: raise ValueError("Direct batch cannot exceed 1001 messages.")
-        await m.reply_text(f"✅ **Direct Batch Link Generated**\n\n{await shorten(await _direct_batch([(chat_id,x) for x in range(start,end+1)]))}",disable_web_page_preview=True)
+        await _ensure_peer(bot,chat_id); await m.reply_text(f"✅ **Direct Batch Link Generated**\n\n{await shorten(await _direct_batch([(chat_id,x) for x in range(start,end+1)]))}",disable_web_page_preview=True)
     except Exception as exc: await m.reply_text(f"❌ `{exc}`")
     raise StopPropagation
 
@@ -246,11 +275,28 @@ async def direct_start(bot,m):
 
 async def _deliver_direct(bot,user_id,items):
     ids=[]; protect=await db.get_protect_content(); template=await _get("custom_caption","")
+    warmed=set()
     for chat_id,mid in items:
+        chat_id=int(chat_id); mid=int(mid)
+        if chat_id not in warmed:
+            await _ensure_peer(bot,chat_id)
+            warmed.add(chat_id)
         source=None
-        try: source=await bot.get_messages(chat_id,mid)
-        except Exception: pass
-        sent=await bot.copy_message(chat_id=user_id,from_chat_id=chat_id,message_id=mid,caption=_caption_text(source,template) if source else None,protect_content=protect,reply_markup=_buttons_markup()); sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
+        try:
+            source=await bot.get_messages(chat_id,mid)
+        except PeerIdInvalid:
+            # A fresh worker can lose the peer cache between link creation and
+            # delivery. Refresh once and retry before returning an error.
+            await _ensure_peer(bot,chat_id)
+            source=await bot.get_messages(chat_id,mid)
+        except Exception:
+            source=None
+        try:
+            sent=await bot.copy_message(chat_id=user_id,from_chat_id=chat_id,message_id=mid,caption=_caption_text(source,template) if source else None,protect_content=protect,reply_markup=_buttons_markup())
+        except PeerIdInvalid:
+            await _ensure_peer(bot,chat_id)
+            sent=await bot.copy_message(chat_id=user_id,from_chat_id=chat_id,message_id=mid,caption=_caption_text(source,template) if source else None,protect_content=protect,reply_markup=_buttons_markup())
+        sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
         if sid:ids.append(int(sid))
     delay=await db.get_auto_delete_seconds()
     if delay>0 and ids:
