@@ -22,6 +22,8 @@ class _AsyncCursor:
 
 
 class Database:
+    REQUEST_TIMEOUT = 8
+
     def __init__(self, uri=None, database_name=None):
         if not Config.SUPABASE_URL or not Config.SUPABASE_KEY:
             raise RuntimeError("SUPABASE_URL and SUPABASE_KEY (or SUPABASE_SERVICE_ROLE_KEY) must be configured.")
@@ -29,8 +31,15 @@ class Database:
         self.table = "users"
         self.settings_table = "bot_settings"
 
-    async def _execute(self, operation):
-        return await asyncio.to_thread(operation)
+    async def _execute(self, operation, label="database operation"):
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(operation),
+                timeout=self.REQUEST_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            print(f"[SUPABASE] {label} timed out after {self.REQUEST_TIMEOUT}s")
+            raise
 
     @staticmethod
     def _ban_status(row):
@@ -43,28 +52,59 @@ class Database:
         }
 
     def new_user(self, id):
-        return {"id": int(id), "join_date": datetime.date.today().isoformat(), "is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}
+        return {
+            "id": int(id),
+            "join_date": datetime.date.today().isoformat(),
+            "is_banned": False,
+            "ban_duration": 0,
+            "banned_on": datetime.date.max.isoformat(),
+            "ban_reason": "",
+        }
 
     async def add_user(self, id):
         try:
-            await self._execute(lambda: self.client.table(self.table).upsert(self.new_user(id), on_conflict="id").execute())
+            await self._execute(
+                lambda: self.client.table(self.table).upsert(
+                    self.new_user(id), on_conflict="id"
+                ).execute(),
+                "add user",
+            )
         except Exception as err:
             print(f"[USER_DB] Extended users schema unavailable, using legacy columns: {err}")
-            await self._execute(lambda: self.client.table(self.table).upsert(
-                {"id": int(id), "join_date": datetime.date.today().isoformat()},
-                on_conflict="id"
-            ).execute())
+            await self._execute(
+                lambda: self.client.table(self.table).upsert(
+                    {"id": int(id), "join_date": datetime.date.today().isoformat()},
+                    on_conflict="id",
+                ).execute(),
+                "add legacy user",
+            )
 
     async def is_user_exist(self, id):
-        response = await self._execute(lambda: self.client.table(self.table).select("id").eq("id", int(id)).limit(1).execute())
+        response = await self._execute(
+            lambda: self.client.table(self.table)
+            .select("id")
+            .eq("id", int(id))
+            .limit(1)
+            .execute(),
+            "user existence check",
+        )
         return bool(response.data)
 
     async def total_users_count(self):
-        response = await self._execute(lambda: self.client.table(self.table).select("id").execute())
+        response = await self._execute(
+            lambda: self.client.table(self.table).select("id").execute(),
+            "total users count",
+        )
         return len(response.data or [])
 
     async def get_all_users(self):
-        response = await self._execute(lambda: self.client.table(self.table).select("id,is_banned,ban_duration,banned_on,ban_reason,join_date").order("id").execute())
+        response = await self._execute(
+            lambda: self.client.table(self.table)
+            .select("id,is_banned,ban_duration,banned_on,ban_reason,join_date")
+            .order("id")
+            .execute(),
+            "all users",
+        )
         rows = []
         for row in response.data or []:
             row["ban_status"] = self._ban_status(row)
@@ -72,28 +112,75 @@ class Database:
         return _AsyncCursor(rows)
 
     async def delete_user(self, user_id):
-        await self._execute(lambda: self.client.table(self.table).delete().eq("id", int(user_id)).execute())
+        await self._execute(
+            lambda: self.client.table(self.table).delete().eq("id", int(user_id)).execute(),
+            "delete user",
+        )
 
     async def remove_ban(self, id):
-        await self._execute(lambda: self.client.table(self.table).update({"is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}).eq("id", int(id)).execute())
+        await self._execute(
+            lambda: self.client.table(self.table)
+            .update({
+                "is_banned": False,
+                "ban_duration": 0,
+                "banned_on": datetime.date.max.isoformat(),
+                "ban_reason": "",
+            })
+            .eq("id", int(id))
+            .execute(),
+            "remove ban",
+        )
 
     async def ban_user(self, user_id, ban_duration, ban_reason):
-        await self._execute(lambda: self.client.table(self.table).update({"is_banned": True, "ban_duration": int(ban_duration), "banned_on": datetime.date.today().isoformat(), "ban_reason": str(ban_reason)}).eq("id", int(user_id)).execute())
+        await self._execute(
+            lambda: self.client.table(self.table)
+            .update({
+                "is_banned": True,
+                "ban_duration": int(ban_duration),
+                "banned_on": datetime.date.today().isoformat(),
+                "ban_reason": str(ban_reason),
+            })
+            .eq("id", int(user_id))
+            .execute(),
+            "ban user",
+        )
 
     async def get_ban_status(self, id):
         try:
-            response = await self._execute(lambda: self.client.table(self.table).select(
-                "is_banned,ban_duration,banned_on,ban_reason"
-            ).eq("id", int(id)).limit(1).execute())
+            response = await self._execute(
+                lambda: self.client.table(self.table)
+                .select("is_banned,ban_duration,banned_on,ban_reason")
+                .eq("id", int(id))
+                .limit(1)
+                .execute(),
+                "ban status",
+            )
             if not response.data:
-                return {"is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}
+                return {
+                    "is_banned": False,
+                    "ban_duration": 0,
+                    "banned_on": datetime.date.max.isoformat(),
+                    "ban_reason": "",
+                }
             return self._ban_status(response.data[0])
         except Exception as err:
             print(f"[USER_DB] Ban columns unavailable: {err}")
-            return {"is_banned": False, "ban_duration": 0, "banned_on": datetime.date.max.isoformat(), "ban_reason": ""}
+            return {
+                "is_banned": False,
+                "ban_duration": 0,
+                "banned_on": datetime.date.max.isoformat(),
+                "ban_reason": "",
+            }
 
     async def get_all_banned_users(self):
-        response = await self._execute(lambda: self.client.table(self.table).select("id,is_banned,ban_duration,banned_on,ban_reason,join_date").eq("is_banned", True).order("id").execute())
+        response = await self._execute(
+            lambda: self.client.table(self.table)
+            .select("id,is_banned,ban_duration,banned_on,ban_reason,join_date")
+            .eq("is_banned", True)
+            .order("id")
+            .execute(),
+            "all banned users",
+        )
         rows = []
         for row in response.data or []:
             row["ban_status"] = self._ban_status(row)
@@ -102,7 +189,14 @@ class Database:
 
     async def _get_setting(self, key, default):
         try:
-            response = await self._execute(lambda: self.client.table(self.settings_table).select("value").eq("key", key).limit(1).execute())
+            response = await self._execute(
+                lambda: self.client.table(self.settings_table)
+                .select("value")
+                .eq("key", key)
+                .limit(1)
+                .execute(),
+                f"get setting {key}",
+            )
             if response.data:
                 return response.data[0]["value"]
         except Exception as err:
@@ -110,7 +204,12 @@ class Database:
         return default
 
     async def _set_setting(self, key, value):
-        await self._execute(lambda: self.client.table(self.settings_table).upsert({"key": key, "value": str(value)}, on_conflict="key").execute())
+        await self._execute(
+            lambda: self.client.table(self.settings_table)
+            .upsert({"key": key, "value": str(value)}, on_conflict="key")
+            .execute(),
+            f"set setting {key}",
+        )
 
     async def get_db_channel_id(self):
         # Supabase is the persistent source of truth. DB_CHANNEL is only a bootstrap
@@ -123,7 +222,7 @@ class Database:
         return None
 
     async def set_db_channel_id(self, channel_id):
-        await self.add_storage_channel(channel_id)
+        return await self.add_storage_channel(channel_id)
 
     async def get_storage_channels(self):
         raw = await self._get_setting("storage_channels", "[]")
@@ -152,7 +251,10 @@ class Database:
                 continue
             if channel_id not in clean:
                 clean.append(channel_id)
-        await self._set_setting("storage_channels", json.dumps(clean, separators=(",", ":")))
+        await self._set_setting(
+            "storage_channels",
+            json.dumps(clean, separators=(",", ":")),
+        )
 
     async def add_storage_channel(self, channel_id):
         channel_id = int(channel_id)
@@ -175,7 +277,14 @@ class Database:
         await self._set_setting("auto_delete_seconds", int(seconds))
 
     async def get_protection_settings(self):
-        return {"protect_forward": str(await self._get_setting("protect_forward", "false")).lower() == "true", "protect_download": str(await self._get_setting("protect_download", "false")).lower() == "true"}
+        return {
+            "protect_forward": str(
+                await self._get_setting("protect_forward", "false")
+            ).lower() == "true",
+            "protect_download": str(
+                await self._get_setting("protect_download", "false")
+            ).lower() == "true",
+        }
 
     async def set_protection_setting(self, key, enabled):
         if key not in {"protect_forward", "protect_download"}:
