@@ -66,17 +66,32 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
             raise pyrogram_error
 
 
-async def save_batch_media_in_channel(bot: Client, editable: Message, message_ids: list):
+async def save_batch_media_in_channel(
+    bot: Client,
+    editable: Message,
+    message_ids: list,
+    source_chat_id=None,
+    request_user_id=None,
+):
     try:
-        source_user = editable.reply_to_message.from_user
-        if source_user is None or not _user_can_save(source_user.id):
+        if request_user_id is not None:
+            source_user_id = int(request_user_id)
+        elif editable.reply_to_message and editable.reply_to_message.from_user:
+            source_user_id = int(editable.reply_to_message.from_user.id)
+        else:
+            source_user_id = int(editable.from_user.id) if editable.from_user else 0
+
+        if not source_user_id or not _user_can_save(source_user_id):
             await editable.reply_text("You are not authorized to save files.")
             return
 
         channel_id = await get_storage_channel_id()
+        source_chat_id = source_chat_id or editable.chat.id
         message_ids_str = ""
         for message_id in message_ids:
-            message = await bot.get_messages(chat_id=editable.chat.id, message_ids=message_id)
+            message = await bot.get_messages(chat_id=source_chat_id, message_ids=message_id)
+            if message is None:
+                continue
             sent_message = await forward_to_channel(bot, message, editable)
             if sent_message is None:
                 continue
@@ -119,8 +134,11 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
 
         channel_id = await get_storage_channel_id()
         forwarded_msg = await message.forward(channel_id)
-        file_er_id = str(forwarded_msg.id)
-        if Config.LOG_CHANNEL:
+        file_er_id = forwarded_msg.id if hasattr(forwarded_msg, "id") else forwarded_msg.get("message_id")
+        if not file_er_id:
+            raise RuntimeError("Could not determine stored message ID")
+
+        if Config.LOG_CHANNEL and hasattr(forwarded_msg, "reply_text"):
             try:
                 await forwarded_msg.reply_text(
                     f"#PRIVATE_FILE:\n\n[{message.from_user.first_name}](tg://user?id={message.from_user.id}) Got File Link!",
