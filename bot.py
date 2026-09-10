@@ -1,5 +1,6 @@
 import bot_legacy
 import enhancements
+import direct_link_fix
 from pyrogram import filters
 from pyrogram.types import Message, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from configs import Config
