@@ -29,6 +29,12 @@ class Config(object):
     UPDATES_CHANNEL = None
     LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None
 
+    # Delivery caption / join buttons. Use @username or a full https://t.me/... URL.
+    MAIN_CHANNEL = os.environ.get("MAIN_CHANNEL") or "@hjgroups_1"
+    BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL") or None
+    POCKET_LIBRARY = os.environ.get("POCKET_LIBRARY") or None
+    DELIVERY_TAG = "@hjgroups_1"
+
     OTHER_USERS_CAN_SAVE_FILE = [
         int(user_id)
         for user_id in os.environ.get("OTHER_USERS_CAN_SAVE_FILE", "").split(",")
@@ -79,17 +85,17 @@ Use **Commands** to view all available commands and features.
 📚 **Available Commands:**
 
 ➜ `/start` — Start the bot / open a share link.
-➜ `/genlink` — Store a single replied message or file.
-➜ `/batch` — Store multiple messages from a channel.
-➜ `/custom_batch` — Store multiple selected/random messages.
+➜ `/genlink` — Forward a file/message, then send this command.
+➜ `/batch` — Forward the FIRST and LAST message, then send this command.
+➜ `/custom_batch` — Forward the messages you want, then send this command.
 ➜ `/shortener` — Shorten any shareable link.
 ➜ `/settings` — Customize your settings as your need.
-➜ `/clear_batch` — Clear your current batch.
+➜ `/clear_batch` — Clear your current batch selection.
 
 🛡️ **Moderators Commands:**
 
-➜ `/special_link` — Store multiple messages and create an editable link.
-➜ `/universal_link` — Create a reusable link payload for supported clones.
+➜ `/special_link` — Create a batch link using your forwarded selection.
+➜ `/universal_link` — Create a batch link using your forwarded selection.
 ➜ `/broadcast` — Broadcast a message to users.
 ➜ `/ban` — Ban a user.
 ➜ `/unban` — Unban a user.
