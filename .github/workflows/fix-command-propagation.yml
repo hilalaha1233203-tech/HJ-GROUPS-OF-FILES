@@ -1,96 +1,26 @@
-name: One-time storage peer repair
+name: Fix command propagation
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  repair:
-    if: ${{ !contains(github.event.head_commit.message, '[peer-repair]') }}
+  patch:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Apply private storage peer fallback
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          # bot.py: use Telegram Bot API when the fresh Pyrogram session cannot
-          # resolve a numeric private-channel peer. This keeps existing links
-          # working without changing the storage channel ID in Supabase.
-          p = Path('bot.py')
-          s = p.read_text(encoding='utf-8')
-
-          import_line = 'from handlers.telegram_api import copy_message as api_copy_message, delete_message as api_delete_message, send_message as api_send_message\n'
-          if 'from handlers.telegram_api import copy_message as api_copy_message' not in s:
-              anchor = 'from handlers.save_media import save_media_in_channel, save_batch_media_in_channel, get_short\n'
-              s = s.replace(anchor, anchor + import_line, 1)
-
-          if '_API_DELETE_TASKS = set()' not in s:
-              marker = 'MediaList = {}\n'
-              helper = '''MediaList = {}\n\n_API_DELETE_TASKS = set()\n\n\ndef _track_api_delete_task(task):\n    _API_DELETE_TASKS.add(task)\n    task.add_done_callback(_API_DELETE_TASKS.discard)\n\n\nasync def _delete_api_messages(chat_id, message_ids, delay):\n    try:\n        await asyncio.sleep(delay)\n        for message_id in message_ids:\n            try:\n                await api_delete_message(chat_id, int(message_id))\n            except Exception as err:\n                print(f"[AUTO_DELETE_API] Failed chat={chat_id} message={message_id}: {err}")\n    except Exception as err:\n        print(f"[AUTO_DELETE_API] Timer failed chat={chat_id}: {err}")\n\n\ndef _schedule_api_delete(chat_id, message_ids, delay):\n    if delay <= 0:\n        return\n    task = asyncio.create_task(_delete_api_messages(chat_id, message_ids, delay))\n    _track_api_delete_task(task)\n\n'''
-              s = s.replace(marker, helper, 1)
-
-          old = '        get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n'
-          new = '''        try:\n            get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)\n        except Exception as peer_error:\n            # Bot API copyMessage works with the private channel numeric ID even\n            # when a fresh Pyrogram in-memory session has no cached peer.\n            try:\n                protection = await db.get_protection_settings()\n                protect = protection["protect_forward"] or protection["protect_download"]\n                delay = await db.get_auto_delete_seconds()\n\n                # Copy the link payload/index temporarily so batch links can be\n                # inspected without downloading anything through this server.\n                index_copy = await api_copy_message(\n                    chat_id=cmd.from_user.id,\n                    from_chat_id=channel_id,\n                    message_id=file_id,\n                    protect_content=False,\n                )\n                copied_text = (index_copy or {}).get("text", "").strip()\n                temporary_id = (index_copy or {}).get("message_id")\n\n                if copied_text:\n                    ids = copied_text.split()\n                    if ids and all(item.lstrip("-").isdigit() for item in ids):\n                        if temporary_id:\n                            try:\n                                await api_delete_message(cmd.from_user.id, temporary_id)\n                            except Exception:\n                                pass\n\n                        delivered_ids = []\n                        for item in ids:\n                            delivered = await api_copy_message(\n                                chat_id=cmd.from_user.id,\n                                from_chat_id=channel_id,\n                                message_id=int(item),\n                                protect_content=protect,\n                            )\n                            delivered_id = (delivered or {}).get("message_id")\n                            if delivered_id:\n                                delivered_ids.append(delivered_id)\n\n                        notice = await api_send_message(\n                            chat_id=cmd.from_user.id,\n                            text=(f"Files will be deleted in {max(1, delay // 60)} minute(s). Please forward and save them."\n                                  if delay > 0 else\n                                  "Files are not scheduled for automatic deletion. Please forward and save them."),\n                            disable_web_page_preview=True,\n                        )\n                        if notice and notice.get("message_id"):\n                            delivered_ids.append(notice["message_id"])\n                        _schedule_api_delete(cmd.from_user.id, delivered_ids, delay)\n                        return\n\n                # Normal single-file link. The temporary copy is already the\n                # actual delivered file, so keep it and schedule deletion.\n                delivered_id = (index_copy or {}).get("message_id")\n                if not delivered_id:\n                    raise RuntimeError("Telegram Bot API returned no message ID")\n                notice = await api_send_message(\n                    chat_id=cmd.from_user.id,\n                    text=(f"Files will be deleted in {max(1, delay // 60)} minute(s). Please forward and save them."\n                          if delay > 0 else\n                          "Files are not scheduled for automatic deletion. Please forward and save them."),\n                    disable_web_page_preview=True,\n                )\n                delete_ids = [delivered_id]\n                if notice and notice.get("message_id"):\n                    delete_ids.append(notice["message_id"])\n                _schedule_api_delete(cmd.from_user.id, delete_ids, delay)\n                return\n            except Exception:\n                raise peer_error\n'''
-          if old in s and 'Bot API copyMessage works with the private channel numeric ID' not in s:
-              s = s.replace(old, new, 1)
-          p.write_text(s, encoding='utf-8')
-
-          # save_media.py: fallback for saving private user media into the
-          # configured storage channel when Pyrogram cannot resolve its peer.
-          p = Path('handlers/save_media.py')
-          s = p.read_text(encoding='utf-8')
-          if 'from handlers.telegram_api import copy_message as api_copy_message' not in s:
-              s = s.replace(
-                  'from handlers.database import db\n',
-                  'from handlers.database import db\nfrom handlers.telegram_api import copy_message as api_copy_message\n',
-                  1,
-              )
-          old = '''    try:\n        return await message.forward(channel_id)\n    except FloodWait as sl:\n        await asyncio.sleep(sl.value)\n        return await forward_to_channel(bot, message, editable)\n'''
-          new = '''    try:\n        return await message.forward(channel_id)\n    except FloodWait as sl:\n        await asyncio.sleep(sl.value)\n        return await forward_to_channel(bot, message, editable)\n    except Exception as pyrogram_error:\n        try:\n            return await api_copy_message(\n                chat_id=channel_id,\n                from_chat_id=message.chat.id,\n                message_id=message.id,\n                protect_content=False,\n            )\n        except Exception:\n            raise pyrogram_error\n'''
-          if old in s and 'from_chat_id=message.chat.id' not in s:
-              s = s.replace(old, new, 1)
-
-          s = s.replace(
-              '            message_ids_str += f"{str(sent_message.id)} "\n',
-              '            saved_id = sent_message.id if hasattr(sent_message, "id") else sent_message.get("message_id")\n            if saved_id:\n                message_ids_str += f"{str(saved_id)} "\n',
-              1,
-          )
-          p.write_text(s, encoding='utf-8')
-
-          # send_file.py: Bot API fallback for storage delivery.
-          p = Path('handlers/send_file.py')
-          s = p.read_text(encoding='utf-8')
-          if 'from handlers.telegram_api import copy_message as api_copy_message' not in s:
-              s = s.replace(
-                  'from handlers.database import db\n',
-                  'from handlers.database import db\nfrom handlers.telegram_api import copy_message as api_copy_message\n',
-                  1,
-              )
-          marker = '''    except FloodWait as e:\n        await asyncio.sleep(e.value)\n        return await media_forward(bot, user_id, file_id, channel_id)\n'''
-          replacement = '''    except FloodWait as e:\n        await asyncio.sleep(e.value)\n        return await media_forward(bot, user_id, file_id, channel_id)\n    except Exception as pyrogram_error:\n        try:\n            protection = await db.get_protection_settings()\n            protect = protection["protect_forward"] or protection["protect_download"]\n            return await api_copy_message(\n                chat_id=user_id,\n                from_chat_id=channel_id,\n                message_id=file_id,\n                protect_content=protect,\n            )\n        except Exception:\n            raise pyrogram_error\n'''
-          if marker in s and 'except Exception as pyrogram_error:' not in s:
-              s = s.replace(marker, replacement, 1)
-          p.write_text(s, encoding='utf-8')
-          PY
-
-      - name: Validate Python syntax
-        run: python -m py_compile bot.py handlers/*.py configs.py
-
-      - name: Commit source repair only
+      - name: Apply command propagation fix
+        run: python .github/scripts/fix_command_propagation.py
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bot.py handlers/send_file.py handlers/save_media.py
-          git diff --cached --quiet && exit 0
-          git commit -m "[peer-repair] Fix private storage peer after redeploy"
+          if git diff --quiet; then echo "No changes needed"; exit 0; fi
+          git add bot.py
+          git commit -m "Fix command handlers being blocked by generic private handler"
           git push
