@@ -1,6 +1,7 @@
 # HJ GROUPS OF FILES - File delivery
 
 import asyncio
+import inspect
 from pyrogram import Client
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
@@ -9,6 +10,7 @@ from handlers.database import db
 from handlers.telegram_api import copy_message as api_copy_message, edit_message_caption as api_edit_message_caption, edit_message_reply_markup as api_edit_message_reply_markup
 
 _DELETE_TASKS = set()
+_BATCH_DELETE_CONTEXTS = {}
 
 
 def human_size(size):
@@ -198,6 +200,42 @@ async def send_delete_notice(bot: Client, user_id: int, delay: int):
         return await send_delete_notice(bot, user_id, delay)
 
 
+def _legacy_batch_context():
+    """Detect the legacy /start batch loop without changing bot_legacy.py."""
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame else None
+        while frame is not None:
+            if frame.f_code.co_name == "start" and "message_ids" in frame.f_locals:
+                ids = frame.f_locals.get("message_ids")
+                current_id = frame.f_locals.get("message_id")
+                if isinstance(ids, (list, tuple)) and len(ids) > 1 and current_id is not None:
+                    try:
+                        normalized_ids = [int(x) for x in ids]
+                        return {
+                            "ids": normalized_ids,
+                            "current_id": int(current_id),
+                        }
+                    except Exception:
+                        return None
+            frame = frame.f_back
+    finally:
+        del frame
+    return None
+
+
+async def _send_batch_delete_notice_once(bot, user_id: int, delivered_ids, delay: int):
+    if delay <= 0:
+        return
+    notice = await send_delete_notice(bot, user_id, delay)
+    if notice is not None:
+        notice_id = getattr(notice, "id", None) if not isinstance(notice, dict) else notice.get("message_id")
+        if notice_id:
+            delivered_ids.append(int(notice_id))
+    task = asyncio.create_task(_delete_delivered_messages(bot, user_id, delivered_ids, delay))
+    _track_delete_task(task)
+
+
 async def send_media_and_reply(
     bot: Client,
     user_id: int,
@@ -217,6 +255,26 @@ async def send_media_and_reply(
     ]
 
     delay = await db.get_auto_delete_seconds()
+    batch_context = _legacy_batch_context()
+    if batch_context:
+        task = asyncio.current_task()
+        key = id(task)
+        state = _BATCH_DELETE_CONTEXTS.setdefault(
+            key,
+            {
+                "message_ids": [],
+                "expected_ids": batch_context["ids"],
+                "delay": delay,
+            },
+        )
+        state["message_ids"].extend(int(mid) for mid in message_ids if mid)
+        state["delay"] = delay
+        if int(file_id) == int(batch_context["ids"][-1]):
+            final_ids = list(state["message_ids"])
+            _BATCH_DELETE_CONTEXTS.pop(key, None)
+            await _send_batch_delete_notice_once(bot, user_id, final_ids, delay)
+        return delivered
+
     if show_notice:
         notice = await send_delete_notice(bot, user_id, delay)
         if notice is not None:
