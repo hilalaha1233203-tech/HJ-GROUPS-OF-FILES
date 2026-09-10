@@ -1,53 +1,15 @@
 name: Remove Force Subscribe Completely
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: ${{ !contains(github.event.head_commit.message, '[force-sub-removed]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Remove remaining force-sub callback
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path('bot.py')
-          s = p.read_text(encoding='utf-8')
-
-          # Remove the refreshForceSub callback block, if present.
-          s, count = re.subn(
-              r'\n    elif cb_data == "refreshForceSub":\n.*?(?=\n    elif cb_data\.startswith\("ban_user_"\):)',
-              '',
-              s,
-              flags=re.S,
-          )
-
-          # Remove the unused force-sub import.
-          s = s.replace('from handlers.force_sub_handler import handle_force_sub\n', '')
-
-          p.write_text(s, encoding='utf-8')
-          print(f'Removed refreshForceSub block: {count}')
-          PY
-
-      - name: Validate Python syntax
-        run: python -m py_compile bot.py handlers/*.py
-
-      - name: Commit patch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bot.py
-          git diff --cached --quiet && exit 0
-          git commit -m "[force-sub-removed] Remove remaining force subscribe code"
-          git push
+      - name: Historical force-sub patch
+        run: echo "Manual-only legacy patch workflow."
