@@ -1,69 +1,17 @@
 name: Restore FileStore-style settings UI
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: ${{ !contains(github.event.head_commit.message, '[settings-ui-restored]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Restore commands and settings UI
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path('bot.py')
-          s = p.read_text(encoding='utf-8')
-
-          # Add a direct /genlink helper before the existing broadcast handler.
-          marker = '@Bot.on_message(filters.private & filters.command("broadcast") & filters.user(Config.BOT_OWNER) & filters.reply)'
-          if 'async def genlink_command' not in s:
-              helper = '''@Bot.on_message(filters.private & filters.command("genlink") & filters.reply)\n          async def genlink_command(bot: Client, m: Message):\n              if m.reply_to_message is None or not m.reply_to_message.media:\n                  await m.reply_text("Reply to a file or media message and use `/genlink`.")\n                  return\n              await m.reply_to_message.reply_text("Generating permanent share link ...")\n              notice = await m.reply_text("Please wait, storing the file ...")\n              await save_media_in_channel(bot, editable=notice, message=m.reply_to_message)\n\n\n          @Bot.on_message(filters.private & filters.command("shortener"))\n          async def shortener_command(bot: Client, m: Message):\n              target = None\n              if len(m.command) > 1:\n                  target = m.command[1]\n              elif m.reply_to_message and m.reply_to_message.text:\n                  target = m.reply_to_message.text.strip()\n              if not target:\n                  await m.reply_text("Usage: `/shortener <link>` or reply to a message containing a link.")\n                  return\n              try:\n                  short = get_short(target)\n                  await m.reply_text(f"**Shortened Link:**\\n{short}", disable_web_page_preview=True)\n              except Exception as err:\n                  await m.reply_text(f"Could not shorten link.\\n\\n`{err}`")\n\n\n          '''
-              if marker not in s:
-                  raise SystemExit('broadcast marker not found')
-              s = s.replace(marker, helper + marker, 1)
-
-          # Replace the settings display with a FileStore-style settings hub.
-          start = s.find('async def show_settings(message):')
-          end = s.find('\n\n@Bot.on_message(filters.private & filters.command("status")', start)
-          if start < 0 or end < 0:
-              raise SystemExit('show_settings boundaries not found')
-
-          new_settings = '''async def show_settings(message):\n              delay = await db.get_auto_delete_seconds()\n              current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"\n              protection = await db.get_protection_settings()\n              protect = protection["protect_forward"] or protection["protect_download"]\n              channels = await db.get_storage_channels()\n              shortener = "Enabled ✅" if Config.SHORTLINK_URL and Config.SHORTLINK_API else "Disabled ❌"\n              await message.reply_text(\n                  "**🛠️ HJ GROUPS STORE KEEPER — SETTINGS**\\n\\n"\n                  "Customize your settings as your need.\\n\\n"\n                  f"**Link Shortener**\\n- Shortener: `{Config.SHORTLINK_URL or 'Not configured'}`\\n- Status: `{shortener}`\\n\\n"\n                  "**Custom Caption**\\n- Add a custom caption using file name, file size and original caption placeholders.\\n\\n"\n                  "**Custom Button**\\n- Add a custom inline button to delivered messages.\\n\\n"\n                  "**Protect Content**\\n- Restrict users from forwarding or saving delivered contents.\\n- Telegram uses one native protected-content switch for both behaviors.\\n"\n                  f"- status: `{'Enabled ✅' if protect else 'Disabled ❌'}`\\n\\n"\n                  "**Auto Delete**\\n"\n                  f"- Delivered file timer: `{current}`\\n\\n"\n                  f"**Storage Channels**\\n- Registered channels: `{len(channels)}`\\n- Add a new channel by forwarding one of its messages to the bot as the owner/admin.",\n                  reply_markup=InlineKeyboardMarkup([\n                      [InlineKeyboardButton("🔗 Link Shortener", callback_data="settings_shortener")],\n                      [InlineKeyboardButton("📝 Custom Caption", callback_data="settings_caption"),\n                       InlineKeyboardButton("🔘 Custom Button", callback_data="settings_button")],\n                      [InlineKeyboardButton(f"🛡️ Protect Content: {'ON' if protect else 'OFF'}", callback_data="toggle_protect_forward")],\n                      [InlineKeyboardButton("🗑️ Auto Delete", callback_data="settings_autodelete")],\n                      [InlineKeyboardButton("📂 Storage Channels", callback_data="settings_channels")],\n                      [InlineKeyboardButton("Close", callback_data="closeMessage")]\n                  ])\n              )\n'''
-          s = s[:start] + new_settings + s[end:]
-
-          # Register aliases while retaining the existing command names.
-          cmd_marker = '    await Bot.set_bot_commands(['
-          a = s.find(cmd_marker)
-          if a < 0:
-              raise SystemExit('set_bot_commands marker not found')
-          b = s.find('    ])', a)
-          if b < 0:
-              raise SystemExit('command list end not found')
-          command_block = '''    await Bot.set_bot_commands([\n        BotCommand("start", "Start the bot / open file links"),\n        BotCommand("genlink", "Store a single replied message or file"),\n        BotCommand("batch", "Create a batch link from saved messages"),\n        BotCommand("custom_batch", "Create a custom multi-message batch"),\n        BotCommand("shortener", "Shorten a shareable link"),\n        BotCommand("settings", "Customize bot settings"),\n        BotCommand("clear_batch", "Clear your current batch"),\n        BotCommand("special_link", "Create an editable batch link"),\n        BotCommand("universal_link", "Create a reusable share link"),\n        BotCommand("broadcast", "Admin: broadcast a replied message"),\n        BotCommand("ban", "Admin: ban a user"),\n        BotCommand("unban", "Admin: unban a user"),\n        BotCommand("status", "Admin: show total users"),\n        BotCommand("ban_user", "Admin: ban a user for days"),\n        BotCommand("unban_user", "Admin: unban a user"),\n        BotCommand("banned_users", "Admin: list banned users"),\n    ])'''
-          s = s[:a] + command_block + s[b+7:]
-
-          p.write_text(s, encoding='utf-8')
-          PY
-
-      - name: Validate Python syntax
-        run: python -m py_compile bot.py handlers/*.py configs.py
-
-      - name: Commit
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add bot.py
-          git diff --cached --quiet && exit 0
-          git commit -m "[settings-ui-restored] Restore FileStore-style commands and settings"
-          git push
+      - name: Historical settings UI patch
+        run: echo "Manual-only legacy patch workflow."
