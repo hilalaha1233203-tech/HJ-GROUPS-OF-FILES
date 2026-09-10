@@ -3,11 +3,9 @@
 # This wrapper adds the simple forwarding workflow without removing
 # the legacy settings, storage, admin, broadcast and link functionality.
 
-import asyncio
-
 import bot_legacy
 from pyrogram import filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, BotCommand
+from pyrogram.types import Message, BotCommand
 
 from configs import Config
 from handlers.save_media import save_media_in_channel, save_batch_media_in_channel
@@ -18,14 +16,11 @@ Bot = bot_legacy.Bot
 # this state only remembers forwarded message IDs until the command is used.
 USER_WORKFLOW = {}
 
-FILESTORE_COMMANDS = set(bot_legacy.FILESTORE_COMMANDS)
+FILESTORE_COMMANDS = list(bot_legacy.FILESTORE_COMMANDS)
 
 
 def _state(user_id: int):
-    return USER_WORKFLOW.setdefault(
-        str(int(user_id)),
-        {"recent": []},
-    )
+    return USER_WORKFLOW.setdefault(str(int(user_id)), {"recent": []})
 
 
 def _get_forward_origin(message):
@@ -33,14 +28,12 @@ def _get_forward_origin(message):
     if message is None:
         return None
 
-    # Newer Pyrogram / Bot API representation.
     origin = getattr(message, "forward_origin", None)
     origin_chat = getattr(origin, "chat", None) if origin else None
     origin_message_id = getattr(origin, "message_id", None) if origin else None
     if origin_chat is not None and origin_message_id:
         return int(origin_chat.id), int(origin_message_id)
 
-    # Legacy representation.
     forwarded_chat = getattr(message, "forward_from_chat", None)
     forwarded_message_id = getattr(message, "forward_from_message_id", None)
     if forwarded_chat is not None and forwarded_message_id:
@@ -114,11 +107,8 @@ async def _find_last_forwarded_message(bot, m):
 
 @Bot.on_message(filters.private & filters.command("genlink"), group=-1)
 async def user_genlink(bot, m: Message):
-    """Old/simple UX: forward file first, then just send /genlink."""
-    target = m.reply_to_message
-    if target is None:
-        target = await _find_last_forwarded_message(bot, m)
-
+    """Forward file first, then send /genlink."""
+    target = m.reply_to_message or await _find_last_forwarded_message(bot, m)
     if target is None:
         await m.reply_text(
             "📎 First forward the file/message from your channel to this bot.\n\n"
@@ -128,6 +118,7 @@ async def user_genlink(bot, m: Message):
 
     status = await m.reply_text("⏳ Generating your permanent link...")
     await save_media_in_channel(bot, status, target)
+    _clear_state(m.from_user.id)
 
 
 async def _make_batch_link(bot, m, items):
@@ -151,9 +142,7 @@ async def _make_batch_link(bot, m, items):
     low, high = sorted((start_id, end_id))
     total = high - low + 1
 
-    status = await m.reply_text(
-        f"⏳ Creating one batch link for `{total}` messages..."
-    )
+    status = await m.reply_text(f"⏳ Creating one batch link for `{total}` messages...")
     await save_batch_media_in_channel(
         bot=bot,
         editable=status,
@@ -166,8 +155,7 @@ async def _make_batch_link(bot, m, items):
 
 @Bot.on_message(filters.private & filters.command("batch"), group=-1)
 async def user_batch(bot, m: Message):
-    """Simple batch UX, with the original numeric syntax kept as fallback."""
-    # Original compatibility: /batch start_id end_id after a replied source message.
+    # Original numeric syntax remains supported for compatibility.
     if len(m.command) >= 3:
         try:
             start_id = int(m.command[1])
@@ -188,9 +176,7 @@ async def user_batch(bot, m: Message):
             return
 
         low, high = sorted((start_id, end_id))
-        status = await m.reply_text(
-            f"⏳ Creating one batch link for `{high - low + 1}` messages..."
-        )
+        status = await m.reply_text(f"⏳ Creating one batch link for `{high - low + 1}` messages...")
         await save_batch_media_in_channel(
             bot=bot,
             editable=status,
@@ -206,7 +192,6 @@ async def user_batch(bot, m: Message):
 
 @Bot.on_message(filters.private & filters.command("custom_batch"), group=-1)
 async def user_custom_batch(bot, m: Message):
-    """Simple custom batch: forward the selected messages, then send /custom_batch."""
     origin = _get_forward_origin(m.reply_to_message) if m.reply_to_message else None
 
     if len(m.command) >= 2:
@@ -239,9 +224,7 @@ async def user_custom_batch(bot, m: Message):
             if mid not in ids:
                 ids.append(mid)
 
-    status = await m.reply_text(
-        f"⏳ Creating one batch link for `{len(ids)}` selected messages..."
-    )
+    status = await m.reply_text(f"⏳ Creating one batch link for `{len(ids)}` selected messages...")
     await save_batch_media_in_channel(
         bot=bot,
         editable=status,
@@ -262,7 +245,6 @@ async def user_universal_link(bot, m: Message):
     await _make_batch_link(bot, m, _latest_source_items(m.from_user.id))
 
 
-# Replace only the command menu text; all legacy command handlers remain available.
 async def setup_bot_commands():
     await Bot.set_bot_commands([
         BotCommand("start", "Start the bot / open file links"),
@@ -285,12 +267,7 @@ async def setup_bot_commands():
 
 
 # bot_legacy.run_bot() looks up setup_bot_commands in its own module namespace.
-# Point that name at our clearer menu without changing the legacy startup routine.
 bot_legacy.setup_bot_commands = setup_bot_commands
-
-
-# Keep legacy module startup behavior, including DB checks, storage recovery,
-# callbacks, settings and idle loop.
 run_bot = bot_legacy.run_bot
 
 
