@@ -5,7 +5,7 @@ import requests
 import string
 import random
 from configs import Config
-from pyrogram import Client
+from pyrogram import Client, StopPropagation
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 from handlers.helpers import str_to_b64
@@ -76,6 +76,7 @@ async def save_batch_media_in_channel(
     source_chat_id=None,
     request_user_id=None,
 ):
+    success = False
     try:
         if request_user_id is not None:
             source_user_id = int(request_user_id)
@@ -125,8 +126,17 @@ async def save_batch_media_in_channel(
             reply_markup=InlineKeyboardMarkup(buttons),
             disable_web_page_preview=True
         )
+        success = True
+    except StopPropagation:
+        raise
     except Exception as err:
         await editable.edit(f"Something Went Wrong!\n\n**Error:** `{err}`")
+
+    if success:
+        # The wrapper handles /batch, while the legacy module also has an older
+        # /batch handler. Stop propagation so the old handler cannot send its
+        # additional "Usage: ..." message after the link is created.
+        raise StopPropagation
 
 
 async def save_media_in_channel(bot: Client, editable: Message, message: Message):
