@@ -257,7 +257,7 @@ async def main(bot: Client, message: Message):
                 raise RuntimeError("Storage channel is not configured. Owner must forward one message from the private storage channel to the bot first.")
             forwarded_msg = await message.forward(channel_id)
             file_er_id = str(forwarded_msg.id)
-            share_link = make_share_link(int(file_er_id))
+            share_link = make_share_link(int(file_er_id), channel_id)
             ch_edit = await bot.edit_message_reply_markup(
                 message.chat.id,
                 message.id,
@@ -698,6 +698,8 @@ async def recover_storage_channels():
         stored = []
     if Config.DB_CHANNEL:
         stored.append(int(Config.DB_CHANNEL))
+    # Legacy HJ storage channel used by existing permanent links.
+    stored.append(-1004394820141)
     seen=[]
     for cid in stored:
         if cid in seen:
