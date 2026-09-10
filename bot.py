@@ -229,6 +229,10 @@ async def main(bot: Client, message: Message):
                 disable_web_page_preview=True
             )
 
+        # Let command-specific handlers (/settings, /genlink, /batch, etc.)
+        # receive private text messages after this generic handler inspects them.
+        await message.continue_propagation()
+
     elif message.chat.type == enums.ChatType.CHANNEL:
         updates_id = None
         log_id = None
