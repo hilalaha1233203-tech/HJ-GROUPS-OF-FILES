@@ -43,8 +43,8 @@ def get_short(url):
 async def get_storage_channel_id():
     channel_id = await db.get_db_channel_id()
     if channel_id is None:
-        raise RuntimeError("Storage channel is not configured. Forward one message from your private storage channel to the bot first.")
-    return channel_id
+        raise RuntimeError("Storage channel is not configured. Set the storage channel in Supabase first.")
+    return int(channel_id)
 
 
 async def forward_to_channel(bot: Client, message: Message, editable: Message):
@@ -55,6 +55,9 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
         await asyncio.sleep(sl.value)
         return await forward_to_channel(bot, message, editable)
     except Exception as pyrogram_error:
+        # Pyrogram/MTProto can report `Peer id invalid` when the bot session has
+        # not resolved a private channel peer yet. Bot API copyMessage uses the
+        # bot's chat access directly and avoids that stale-peer failure.
         try:
             return await api_copy_message(
                 chat_id=channel_id,
@@ -62,8 +65,11 @@ async def forward_to_channel(bot: Client, message: Message, editable: Message):
                 message_id=message.id,
                 protect_content=False,
             )
-        except Exception:
-            raise pyrogram_error
+        except Exception as api_error:
+            raise RuntimeError(
+                f"Storage channel {channel_id} could not be accessed. "
+                f"Pyrogram: {pyrogram_error}; Bot API: {api_error}"
+            ) from api_error
 
 
 async def save_batch_media_in_channel(
@@ -133,7 +139,11 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
             return
 
         channel_id = await get_storage_channel_id()
-        forwarded_msg = await message.forward(channel_id)
+
+        # Use the same Pyrogram -> Bot API fallback as batch saving. This is
+        # important for private channels where Pyrogram may have an unresolved
+        # peer even though the bot itself has channel access.
+        forwarded_msg = await forward_to_channel(bot, message, editable)
         file_er_id = forwarded_msg.id if hasattr(forwarded_msg, "id") else forwarded_msg.get("message_id")
         if not file_er_id:
             raise RuntimeError("Could not determine stored message ID")
