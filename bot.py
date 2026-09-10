@@ -119,14 +119,7 @@ async def send_existing_db_link(bot: Client, cmd: Message, message_id: int):
 
 @Bot.on_message(filters.private)
 async def _(bot: Client, cmd: Message):
-    # Run user status checks but don't block command handlers below.
     await handle_user_status(bot, cmd)
-    try:
-        # Allow other handlers (like command-specific ones) to run after status handling.
-        await cmd.continue_propagation()
-    except Exception:
-        # continue_propagation may not be available in older pyrogram versions; ignore if so.
-        pass
 
 
 @Bot.on_message(filters.command("start") & filters.private)
@@ -191,7 +184,7 @@ async def start(bot: Client, cmd: Message):
 
 
 @Bot.on_message(
-    (filters.document | filters.video | filters.audio | filters.photo | (filters.text & ~filters.command()))
+    (filters.document | filters.video | filters.audio | filters.photo | filters.text)
     & filters.private
 )
 async def main(bot: Client, message: Message):
@@ -375,7 +368,7 @@ async def universal_link(bot, m):
 
 @Bot.on_message(filters.private & filters.command("ban"))
 async def ban_alias(bot, m):
-    if not Config.BOT_OWNER or int(m.from_user.id) != int(Config.BOT_OWNER):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
         await m.reply_text("⛔ Owner/Admin Only")
         return
     if len(m.command) < 4:
@@ -387,7 +380,7 @@ async def ban_alias(bot, m):
 
 @Bot.on_message(filters.private & filters.command("unban"))
 async def unban_alias(bot, m):
-    if not Config.BOT_OWNER or int(m.from_user.id) != int(Config.BOT_OWNER):
+    if int(m.from_user.id) != int(Config.BOT_OWNER):
         await m.reply_text("⛔ Owner/Admin Only")
         return
     if len(m.command) < 2:
@@ -605,7 +598,7 @@ async def button(bot: Client, cmd: CallbackQuery):
         MediaList[str(cmd.from_user.id)] = []
 
     elif cb_data.startswith("setdel_"):
-        if not Config.BOT_OWNER or int(cmd.from_user.id) != Config.BOT_OWNER:
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
             await cmd.answer("You are not allowed to change bot settings.", show_alert=True)
             return
         try:
@@ -626,7 +619,7 @@ async def button(bot: Client, cmd: CallbackQuery):
             await cmd.answer(f"Could not save setting: {err}", show_alert=True)
 
     elif cb_data in {"toggle_protect_forward", "toggle_protect_download"}:
-        if not Config.BOT_OWNER or int(cmd.from_user.id) != Config.BOT_OWNER:
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
             await cmd.answer("You are not allowed to change bot settings.", show_alert=True)
             return
         key = "protect_forward" if cb_data == "toggle_protect_forward" else "protect_download"
@@ -663,7 +656,7 @@ async def button(bot: Client, cmd: CallbackQuery):
             await cmd.answer(f"Could not save setting: {err}", show_alert=True)
 
     elif cb_data == "open_settings":
-        if not Config.BOT_OWNER or int(cmd.from_user.id) != Config.BOT_OWNER:
+        if int(cmd.from_user.id) != Config.BOT_OWNER:
             await cmd.answer("You are not allowed to open bot settings.", show_alert=True)
             return
         await show_settings(cmd.message)
