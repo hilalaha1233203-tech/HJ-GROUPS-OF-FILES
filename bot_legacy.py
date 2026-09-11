@@ -38,7 +38,7 @@ async def _delete_api_messages(chat_id, message_ids, delay):
             except Exception as err:
                 print(f"[AUTO_DELETE_API] Failed chat={chat_id} message={message_id}: {err}")
     except Exception as err:
-        print(f"[AUTO_DELETE_API] Timer failed chat={chat_id}: {err}")
+        print(f"[AUTO_DELETE_API] Timer failed: {err}")
 
 
 def _schedule_api_delete(chat_id, message_ids, delay):
@@ -203,15 +203,11 @@ async def start(bot: Client, cmd: Message):
         try:
             get_message = await bot.get_messages(chat_id=channel_id, message_ids=file_id)
         except Exception as peer_error:
-            # Bot API copyMessage works with the private channel numeric ID even
-            # when a fresh Pyrogram in-memory session has no cached peer.
             try:
                 protection = await db.get_protection_settings()
                 protect = protection["protect_forward"] or protection["protect_download"]
                 delay = await db.get_auto_delete_seconds()
 
-                # Copy the link payload/index temporarily so batch links can be
-                # inspected without downloading anything through this server.
                 index_copy = await api_copy_message(
                     chat_id=cmd.from_user.id,
                     from_chat_id=channel_id,
@@ -254,8 +250,6 @@ async def start(bot: Client, cmd: Message):
                         _schedule_api_delete(cmd.from_user.id, delivered_ids, delay)
                         return
 
-                # Normal single-file link. The temporary copy is already the
-                # actual delivered file, so keep it and schedule deletion.
                 delivered_id = (index_copy or {}).get("message_id")
                 if not delivered_id:
                     raise RuntimeError("Telegram Bot API returned no message ID")
@@ -545,10 +539,36 @@ async def show_settings(message):
     )
 
 
+async def _render_status(m):
+    total_users = await db.total_users_count()
+    all_users = await db.get_all_users()
+    banned_users = await db.get_all_banned_users()
+    user_rows = []
+    banned_count = 0
+    async for row in all_users:
+        user_rows.append(row)
+    async for row in banned_users:
+        banned_count += 1
+    text = (
+        "📊 **Bot Status**\n\n"
+        f"👥 **Total Users:** `{total_users}`\n"
+        f"🚫 **Banned Users:** `{banned_count}`"
+    )
+    await m.reply_text(
+        text,
+        quote=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("👥 See Users", callback_data="status_users")],
+            [InlineKeyboardButton("🚫 Banned Users", callback_data="status_banned")],
+            [InlineKeyboardButton("🔄 Refresh", callback_data="status_refresh"),
+             InlineKeyboardButton("Close", callback_data="closeMessage")]
+        ])
+    )
+
+
 @Bot.on_message(filters.private & filters.command("status") & filters.user(Config.BOT_OWNER))
 async def sts(_, m: Message):
-    total_users = await db.total_users_count()
-    await m.reply_text(text=f"**Total Users in DB:** `{total_users}`", quote=True)
+    await _render_status(m)
 
 
 @Bot.on_message(filters.private & filters.command("ban_user") & filters.user(Config.BOT_OWNER))
@@ -600,25 +620,71 @@ async def unban(c: Client, m: Message):
 
 @Bot.on_message(filters.private & filters.command("banned_users") & filters.user(Config.BOT_OWNER))
 async def _banned_users(_, m: Message):
+    await _send_banned_users(m)
+
+
+async def _send_users(m):
+    all_users = await db.get_all_users()
+    lines = ["👥 **All Users**\n"]
+    count = 0
+    async for user in all_users:
+        count += 1
+        user_id = user.get("id")
+        join_date = user.get("join_date", "unknown")
+        status = user.get("ban_status") or {}
+        banned = status.get("is_banned", False)
+        badge = "🚫 BANNED" if banned else "✅ Active"
+        lines.append(f"{count}. `{user_id}` — {badge} — `{join_date}`")
+    if count == 0:
+        lines.append("No users found.")
+    text = "\n".join(lines)
+    if len(text) > 4096:
+        with open('users.txt', 'w', encoding='utf-8') as f:
+            f.write(text)
+        await m.reply_document('users.txt', caption=f"Total users: `{count}`")
+        os.remove('users.txt')
+        return
+    await m.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back to Status", callback_data="status_refresh")],
+            [InlineKeyboardButton("Close", callback_data="closeMessage")]
+        ])
+    )
+
+
+async def _send_banned_users(m):
     all_banned_users = await db.get_all_banned_users()
     banned_usr_count = 0
-    text = ''
+    lines = ["🚫 **Banned Users**\n"]
     async for banned_user in all_banned_users:
         user_id = banned_user['id']
         ban_duration = banned_user['ban_status']['ban_duration']
         banned_on = banned_user['ban_status']['banned_on']
         ban_reason = banned_user['ban_status']['ban_reason']
         banned_usr_count += 1
-        text += f"> **user_id**: `{user_id}`, **Ban Duration**: `{ban_duration}`, **Banned on**: `{banned_on}`, **Reason**: `{ban_reason}`\n\n"
-
-    reply_text = f"Total banned user(s): `{banned_usr_count}`\n\n{text}"
-    if len(reply_text) > 4096:
+        lines.append(
+            f"{banned_usr_count}. **User ID:** `{user_id}`\n"
+            f"   **Duration:** `{ban_duration}` day(s)\n"
+            f"   **Banned on:** `{banned_on}`\n"
+            f"   **Reason:** `{ban_reason or 'Not specified'}`\n"
+        )
+    if banned_usr_count == 0:
+        lines.append("No banned users found.")
+    text = "\n".join(lines)
+    if len(text) > 4096:
         with open('banned-users.txt', 'w', encoding='utf-8') as f:
-            f.write(reply_text)
-        await m.reply_document('banned-users.txt', True)
+            f.write(text)
+        await m.reply_document('banned-users.txt', caption=f"Total banned users: `{banned_usr_count}`")
         os.remove('banned-users.txt')
         return
-    await m.reply_text(reply_text, True)
+    await m.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back to Status", callback_data="status_refresh")],
+            [InlineKeyboardButton("Close", callback_data="closeMessage")]
+        ])
+    )
 
 
 @Bot.on_message(filters.private & filters.command("clear_batch"))
@@ -660,6 +726,27 @@ async def button(bot: Client, cmd: CallbackQuery):
                 [InlineKeyboardButton("About Bot", callback_data="aboutbot"), InlineKeyboardButton("Close 🚪", callback_data="closeMessage")]
             ])
         )
+
+    elif cb_data == "status_users":
+        if int(cmd.from_user.id) != int(Config.BOT_OWNER):
+            await cmd.answer("You are not allowed to view users.", show_alert=True)
+            return
+        await cmd.message.delete()
+        await _send_users(cmd.message)
+
+    elif cb_data == "status_banned":
+        if int(cmd.from_user.id) != int(Config.BOT_OWNER):
+            await cmd.answer("You are not allowed to view banned users.", show_alert=True)
+            return
+        await cmd.message.delete()
+        await _send_banned_users(cmd.message)
+
+    elif cb_data == "status_refresh":
+        if int(cmd.from_user.id) != int(Config.BOT_OWNER):
+            await cmd.answer("You are not allowed to view bot status.", show_alert=True)
+            return
+        await cmd.message.delete()
+        await _render_status(cmd.message)
 
     elif cb_data.startswith("ban_user_"):
         if not Config.UPDATES_CHANNEL:
@@ -834,7 +921,7 @@ async def setup_bot_commands():
         BotCommand("broadcast", "Admin: broadcast a replied message"),
         BotCommand("ban", "Moderator: ban a user"),
         BotCommand("unban", "Moderator: unban a user"),
-        BotCommand("status", "Admin: show total users"),
+        BotCommand("status", "Admin: show bot status and users"),
         BotCommand("ban_user", "Admin: ban a user"),
         BotCommand("unban_user", "Admin: unban a user"),
         BotCommand("banned_users", "Admin: list banned users"),
