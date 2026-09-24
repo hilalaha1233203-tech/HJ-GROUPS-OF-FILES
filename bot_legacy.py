@@ -20,7 +20,9 @@ from handlers.save_media import save_media_in_channel, save_batch_media_in_chann
 from handlers.telegram_api import (
     copy_message as api_copy_message,
     get_chat as api_get_chat,
-), delete_message as api_delete_message, send_message as api_send_message
+    delete_message as api_delete_message,
+    send_message as api_send_message,
+)
 
 MediaList = {}
 
@@ -949,3 +951,25 @@ async def setup_bot_commands():
         BotCommand("banned_users", "Admin: list banned users"),
     ])
 
+
+async def run_bot():
+    await Bot.start()
+    await validate_db_channel_access()
+    await recover_storage_channels()
+    await setup_bot_commands()
+    print(f"[{Config.BOT_USERNAME}] Bot started successfully")
+    await idle()
+    await Bot.stop()
+
+
+if __name__ == "__main__":
+    while True:
+        try:
+            Bot.run(run_bot())
+            break
+        except FloodWait as e:
+            wait_seconds = max(int(e.value), 60)
+            print(f"[{Config.BOT_USERNAME}] Telegram FloodWait during authorization. Waiting {wait_seconds} seconds before retry.")
+            time.sleep(wait_seconds)
+        except Exception:
+            raise
