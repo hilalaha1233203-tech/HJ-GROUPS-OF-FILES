@@ -68,6 +68,29 @@ async def edit_message_reply_markup(chat_id: int, message_id: int, reply_markup:
     )
 
 
+async def get_chat(chat_id):
+    """Fetch chat metadata through the Telegram Bot API without Pyrogram peer resolution."""
+    return await asyncio.to_thread(
+        _call,
+        "getChat",
+        {"chat_id": int(chat_id)},
+    )
+
+
+async def get_me():
+    """Return the bot identity through the Telegram Bot API."""
+    return await asyncio.to_thread(_call, "getMe", {})
+
+
+async def get_chat_member(chat_id, user_id):
+    """Fetch a chat member through the Telegram Bot API."""
+    return await asyncio.to_thread(
+        _call,
+        "getChatMember",
+        {"chat_id": int(chat_id), "user_id": int(user_id)},
+    )
+
+
 async def send_message(chat_id: int, text: str, **kwargs):
     payload = {"chat_id": int(chat_id), "text": str(text)}
     payload.update(kwargs)
