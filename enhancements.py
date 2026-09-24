@@ -141,7 +141,30 @@ async def enhanced_save_single(bot,editable,message):
     try:
         channel_id=await db.get_db_channel_id()
         if channel_id is None: raise RuntimeError("Storage channel is not configured.")
-        sent=await bot.copy_message(chat_id=channel_id,from_chat_id=message.chat.id,message_id=message.id,caption=await _caption(message),protect_content=await db.get_protect_content(),reply_markup=_buttons_markup())
+        caption = await _caption(message)
+        try:
+            sent=await bot.copy_message(chat_id=channel_id,from_chat_id=message.chat.id,message_id=message.id,caption=caption,protect_content=await db.get_protect_content(),reply_markup=_buttons_markup())
+        except Exception as pyrogram_error:
+            api_markup=None
+            rows=[]
+            for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
+                u=_url(BUTTON_CACHE.get(k))
+                if u: rows.append([{"text":l,"url":u}])
+            if rows: api_markup={"inline_keyboard":rows}
+            try:
+                sent=await api_copy_message(
+                    chat_id=channel_id,
+                    from_chat_id=message.chat.id,
+                    message_id=message.id,
+                    protect_content=await db.get_protect_content(),
+                    caption=caption,
+                    reply_markup=api_markup,
+                )
+            except Exception as api_error:
+                raise RuntimeError(
+                    f"Storage channel copy failed. Pyrogram: {pyrogram_error}; "
+                    f"Bot API: {api_error}"
+                ) from api_error
         sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
         if not sid: raise RuntimeError("Could not determine stored message ID")
         link=_link("HJGroups_",f"{channel_id}|{sid}"); await editable.edit(f"**Your File Stored in my Database!**\n\nHere is the Permanent Link of your file: {await shorten(link)}\n\nJust Click the link to get your file!",disable_web_page_preview=True)
@@ -156,11 +179,53 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
         channel_id=await db.get_db_channel_id(); source_chat_id=int(source_chat_id or editable.chat.id)
         if channel_id is None: raise RuntimeError("Storage channel is not configured.")
         saved=[]
+        api_rows=[]
+        for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
+            u=_url(BUTTON_CACHE.get(k))
+            if u: api_rows.append([{"text":l,"url":u}])
+        api_markup={"inline_keyboard":api_rows} if api_rows else None
         for mid in message_ids:
-            src=await bot.get_messages(source_chat_id,int(mid)); sent=await bot.copy_message(chat_id=channel_id,from_chat_id=source_chat_id,message_id=int(mid),caption=await _caption(src),protect_content=await db.get_protect_content(),reply_markup=_buttons_markup()); sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
+            try:
+                src=await bot.get_messages(source_chat_id,int(mid))
+            except Exception:
+                src=None
+            caption=await _caption(src) if src else None
+            try:
+                sent=await bot.copy_message(
+                    chat_id=channel_id,
+                    from_chat_id=source_chat_id,
+                    message_id=int(mid),
+                    caption=caption,
+                    protect_content=await db.get_protect_content(),
+                    reply_markup=_buttons_markup(),
+                )
+            except Exception as pyrogram_error:
+                try:
+                    sent=await api_copy_message(
+                        chat_id=channel_id,
+                        from_chat_id=source_chat_id,
+                        message_id=int(mid),
+                        protect_content=await db.get_protect_content(),
+                        caption=caption,
+                        reply_markup=api_markup,
+                    )
+                except Exception as api_error:
+                    print(f"[STORAGE_BATCH] Message {mid} failed. Pyrogram: {pyrogram_error}; Bot API: {api_error}")
+                    continue
+            sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
             if sid:saved.append(int(sid))
         if not saved: raise RuntimeError("No files were available to save in this batch.")
-        idx=await bot.send_message(channel_id," ".join(map(str,saved)),disable_web_page_preview=True); link=_link("HJGroups_",f"{channel_id}|{idx.id}")
+        try:
+            idx=await bot.send_message(channel_id," ".join(map(str,saved)),disable_web_page_preview=True)
+        except Exception as pyrogram_send_error:
+            idx=await api_send_message(
+                chat_id=channel_id,
+                text=" ".join(map(str,saved)),
+                disable_web_page_preview=True,
+            )
+        idx_id=getattr(idx,"id",None) or (idx.get("message_id") if isinstance(idx,dict) else None)
+        if not idx_id: raise RuntimeError("Could not determine batch index message ID")
+        link=_link("HJGroups_",f"{channel_id}|{idx_id}")
         await editable.edit(f"**Batch Files Stored in my Database!**\n\nHere is the Permanent Link of your files: {await shorten(link)}\n\nJust Click the link to get your files!",disable_web_page_preview=True)
     except Exception as exc: await editable.edit(f"Something Went Wrong!\n\n**Error:** `{exc}`")
 save_media.save_media_in_channel=enhanced_save_single
