@@ -11,6 +11,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import tempfile
 import time
 
@@ -53,6 +54,8 @@ EDIT_DELAY = _env_float("CAPTION_REPLACE_EDIT_DELAY", 0.15)
 _CHANNELS_PER_PAGE = 8
 _MAX_RANGE = 200000
 _STATUS_EVERY = 25
+_CHANNEL_REGISTRY_KEY = "caption_admin_channels"
+_MAX_KNOWN_CHANNELS = 500
 
 
 def _owner(user_id):
@@ -310,6 +313,126 @@ def _channel_label(item):
     return f"{title}{username}{storage_mark}"[:62]
 
 
+async def _get_known_channels():
+    raw = await db._get_setting(_CHANNEL_REGISTRY_KEY, "[]")
+    try:
+        value = json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+    if not isinstance(value, list):
+        return []
+
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            chat_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if chat_id in seen:
+            continue
+        seen.add(chat_id)
+        result.append({
+            "id": chat_id,
+            "title": str(item.get("title") or "Telegram Channel"),
+            "username": str(item.get("username") or "").lstrip("@"),
+        })
+    return result
+
+
+async def _remember_channel(chat):
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        return
+
+    try:
+        chat_id = int(chat.id)
+    except (TypeError, ValueError):
+        return
+
+    current = await _get_known_channels()
+    item = {
+        "id": chat_id,
+        "title": str(getattr(chat, "title", "") or "Telegram Channel"),
+        "username": str(getattr(chat, "username", "") or "").lstrip("@"),
+    }
+
+    updated = []
+    replaced = False
+    for existing in current:
+        if int(existing["id"]) == chat_id:
+            updated.append(item)
+            replaced = True
+        else:
+            updated.append(existing)
+
+    if not replaced:
+        updated.insert(0, item)
+
+    updated = updated[:_MAX_KNOWN_CHANNELS]
+    try:
+        await db._set_setting(
+            _CHANNEL_REGISTRY_KEY,
+            json.dumps(updated, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception as exc:
+        print(f"[CAPTION_MAINTENANCE] channel registry save failed: {exc}")
+
+
+def _forward_source(message):
+    origin = getattr(message, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    message_id = getattr(origin, "message_id", None) if origin else None
+    if chat is not None and message_id:
+        return chat
+
+    legacy_chat = getattr(message, "forward_from_chat", None)
+    if legacy_chat is not None:
+        return legacy_chat
+    return None
+
+
+def _channel_input_ref(value):
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(
+            "Send a channel @username, t.me link, numeric channel ID, "
+            "or forward one channel message."
+        )
+
+    lowered = raw.lower()
+    if (
+        lowered.startswith("https://t.me/")
+        or lowered.startswith("http://t.me/")
+        or lowered.startswith("https://telegram.me/")
+        or lowered.startswith("http://telegram.me/")
+    ):
+        tail = raw.split("/", 3)[-1]
+        username = tail.split("/", 1)[0]
+        if username and username.lower() not in {"c", "joinchat", "+", "s"}:
+            return "@" + username.lstrip("@")
+        raise ValueError(
+            "Private invite links cannot be resolved automatically. "
+            "Forward one message from that channel instead."
+        )
+
+    if raw.startswith("@"):
+        return raw.split()[0]
+
+    if re.fullmatch(r"-?\d+", raw):
+        return int(raw.split()[0])
+
+    if re.fullmatch(r"[A-Za-z0-9_]{5,}", raw):
+        return "@" + raw
+
+    raise ValueError(
+        "Invalid channel reference. Send @username, t.me/username, numeric "
+        "channel ID, or forward a channel message."
+    )
+
+
 async def _discover_admin_channels():
     try:
         storage_ids = {int(x) for x in await db.get_storage_channels()}
@@ -317,26 +440,51 @@ async def _discover_admin_channels():
         print(f"[CAPTION_MAINTENANCE] Storage list read failed: {exc}")
         storage_ids = set()
 
+    known = await _get_known_channels()
+    by_id = {int(item["id"]): item for item in known}
+
+    for chat_id in storage_ids:
+        by_id.setdefault(
+            chat_id,
+            {
+                "id": chat_id,
+                "title": "HJ Storage Channel",
+                "username": "",
+            },
+        )
+
     channels = []
-    seen = set()
+    refreshed = []
 
-    async for dialog in Bot.get_dialogs():
-        chat = getattr(dialog, "chat", None)
-        if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+    for item in by_id.values():
+        chat_id = int(item["id"])
+        username = str(item.get("username") or "").lstrip("@")
+        ref = f"@{username}" if username else chat_id
+
+        try:
+            chat = await _flood(
+                lambda target=ref: Bot.get_chat(target),
+                f"channel lookup {ref}",
+            )
+        except Exception as exc:
+            print(
+                f"[CAPTION_MAINTENANCE] Channel {chat_id} not resolvable yet: {exc}"
+            )
             continue
 
-        chat_id = int(chat.id)
-        if chat_id in seen:
+        if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
             continue
-        seen.add(chat_id)
 
         try:
             member = await _flood(
-                lambda cid=chat_id: Bot.get_chat_member(cid, "me"),
-                f"admin check {chat_id}",
+                lambda cid=int(chat.id): Bot.get_chat_member(cid, "me"),
+                f"admin check {chat.id}",
             )
         except Exception as exc:
-            print(f"[CAPTION_MAINTENANCE] Cannot inspect {chat_id}: {exc}")
+            print(
+                f"[CAPTION_MAINTENANCE] Cannot inspect admin rights for "
+                f"{chat.id}: {exc}"
+            )
             continue
 
         status = str(getattr(member, "status", "")).lower()
@@ -350,12 +498,33 @@ async def _discover_admin_channels():
             if hasattr(privileges, "can_edit_messages") and not privileges.can_edit_messages:
                 continue
 
-        channels.append({
-            "id": chat_id,
-            "title": getattr(chat, "title", "") or "Telegram Channel",
-            "username": getattr(chat, "username", "") or "",
-            "is_storage": chat_id in storage_ids,
+        item = {
+            "id": int(chat.id),
+            "title": getattr(chat, "title", "") or item.get("title") or "Telegram Channel",
+            "username": getattr(chat, "username", "") or username,
+            "is_storage": int(chat.id) in storage_ids,
+        }
+        channels.append(item)
+        refreshed.append({
+            "id": int(chat.id),
+            "title": item["title"],
+            "username": item["username"],
         })
+
+    old_by_id = {int(item["id"]): item for item in known}
+    for item in refreshed:
+        old_by_id[int(item["id"])] = item
+    try:
+        await db._set_setting(
+            _CHANNEL_REGISTRY_KEY,
+            json.dumps(
+                list(old_by_id.values())[:_MAX_KNOWN_CHANNELS],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+    except Exception as exc:
+        print(f"[CAPTION_MAINTENANCE] channel registry refresh save failed: {exc}")
 
     channels.sort(key=lambda item: (str(item["title"]).lower(), item["id"]))
     return channels
@@ -395,7 +564,16 @@ def _channel_keyboard(channels, page=0):
         rows.append(nav)
 
     rows.append([
-        InlineKeyboardButton("Refresh Channel List", callback_data="cap:refresh")
+        InlineKeyboardButton(
+            "➕ Add / Check Channel",
+            callback_data="cap:add",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            "Refresh Channel List",
+            callback_data="cap:refresh",
+        )
     ])
     rows.append([InlineKeyboardButton("Cancel", callback_data="cap:cancel")])
     return InlineKeyboardMarkup(rows)
@@ -889,33 +1067,39 @@ async def _start_new(message, operation):
 
     _session_start(message.from_user.id, operation)
     status = await message.reply_text(
-        "Scanning Telegram channels where this bot is an administrator..."
+        "Loading known Telegram channels where this bot can edit messages..."
     )
 
     try:
         channels = await _discover_admin_channels()
     except Exception as exc:
-        await status.edit_text(f"Channel scan failed: {exc}")
-        _SESSIONS.pop(int(message.from_user.id), None)
-        return
-
-    if not channels:
         await status.edit_text(
-            "No editable Telegram channels found.\n\n"
-            "Make this bot an administrator in the target channel and grant "
-            "permission to edit channel messages."
+            f"Channel list refresh failed: {exc}\n\n"
+            "Use ➕ Add / Check Channel and send @username or forward one channel message."
         )
-        _SESSIONS.pop(int(message.from_user.id), None)
         return
 
     session = _SESSIONS[int(message.from_user.id)]
     session["channels"] = channels
 
+    if not channels:
+        text = (
+            f"{operation.title().replace('_', ' ')} — Select Target Channel\n\n"
+            "No previously-known editable channels are currently resolvable.\n\n"
+            "Use ➕ Add / Check Channel, then send the channel @username, "
+            "numeric ID, or forward one message from the target channel."
+        )
+    else:
+        text = (
+            f"{operation.title().replace('_', ' ')} — Select Target Channel\n\n"
+            f"Found {len(channels)} currently available editable channel(s).\n"
+            "Private channels that are not yet in the current Pyrogram peer cache "
+            "can be re-added by forwarding one message from that channel.\n"
+            "HJ storage is marked separately."
+        )
+
     await status.edit_text(
-        f"{operation.title().replace('_', ' ')} — Select Target Channel\n\n"
-        f"Found {len(channels)} editable channel(s).\n"
-        "HJ storage is marked separately.\n"
-        "Select the channel that should be modified.",
+        text,
         reply_markup=_channel_keyboard(channels, 0),
     )
 
@@ -938,6 +1122,48 @@ async def set_caption_command(_, message):
     raise StopPropagation
 
 
+
+
+@Bot.on_message(
+    filters.private & filters.forwarded,
+    group=-4,
+)
+async def caption_maintenance_forwarded(_, message):
+    user_id = int(message.from_user.id)
+    session = _SESSIONS.get(user_id)
+    if not session or session.get("step") != "add_channel":
+        return
+
+    if not _owner(user_id):
+        _SESSIONS.pop(user_id, None)
+        await message.reply_text("Owner/Admin Only")
+        raise StopPropagation
+
+    chat = _forward_source(message)
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        await message.reply_text(
+            "❌ Please forward one message directly from the target Telegram channel."
+        )
+        raise StopPropagation
+
+    try:
+        await _resolve_target(int(chat.id))
+        await _remember_channel(chat)
+        channels = await _discover_admin_channels()
+        session["channels"] = channels
+        session["step"] = "channels"
+
+        await message.reply_text(
+            f"✅ Channel verified and added: {getattr(chat, 'title', '') or chat.id}\n"
+            "Select the target channel below.",
+            reply_markup=_channel_keyboard(channels, 0),
+        )
+    except Exception as exc:
+        await message.reply_text(
+            f"❌ Could not verify that channel: {exc}\n"
+            "Make sure the bot is an administrator and can edit channel messages."
+        )
+    raise StopPropagation
 @Bot.on_message(
     filters.private & filters.text & ~filters.command(bot_legacy.FILESTORE_COMMANDS),
     group=-3,
@@ -961,6 +1187,36 @@ async def caption_maintenance_input(_, message):
             raise StopPropagation
 
         step = session.get("step")
+
+        if step == "add_channel":
+            ref = _channel_input_ref(value)
+            try:
+                chat = await _flood(
+                    lambda target=ref: Bot.get_chat(target),
+                    f"add channel {ref}",
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Telegram could not resolve that channel: {exc}\n"
+                    "For a private channel, forward one message from the channel and try again."
+                )
+
+            if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+                raise ValueError("That target is not a Telegram channel.")
+
+            await _resolve_target(int(chat.id))
+            await _remember_channel(chat)
+
+            channels = await _discover_admin_channels()
+            session["channels"] = channels
+            session["step"] = "channels"
+
+            await message.reply_text(
+                f"✅ Channel added: {getattr(chat, 'title', '') or chat.id}\n"
+                "Select it from the channel list below.",
+                reply_markup=_channel_keyboard(channels, 0),
+            )
+            raise StopPropagation
 
         if step == "start":
             if not value.strip().isdigit() or int(value) <= 0:
@@ -1120,6 +1376,24 @@ async def caption_maintenance_callback(_, query):
         if action == "cancel":
             _SESSIONS.pop(user_id, None)
             await query.message.edit_text("Caption maintenance setup cancelled.")
+            raise StopPropagation
+
+        if action == "add":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+
+            session["step"] = "add_channel"
+            await query.message.edit_text(
+                "➕ Add / Check Channel\n\n"
+                "Send one of these:\n"
+                "• Channel @username\n"
+                "• t.me/username\n"
+                "• Numeric channel ID\n"
+                "• Forward one message from the target channel (recommended for private channels)\n\n"
+                "The bot will verify that it is an administrator with permission to edit channel messages.\n"
+                "Send /cancel to stop."
+            )
             raise StopPropagation
 
         if action == "refresh":
