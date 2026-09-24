@@ -1,3 +1,37 @@
+# HJ GROUPS OF FILES
+
+import os
+
+
+class Config(object):
+    API_ID = int(os.environ.get("API_ID", "0"))
+    API_HASH = os.environ.get("API_HASH")
+    BOT_TOKEN = os.environ.get("BOT_TOKEN")
+    BOT_USERNAME = os.environ.get("BOT_USERNAME")
+    # Optional legacy bootstrap. Automatic multi-channel detection is preferred.
+    DB_CHANNEL = os.environ.get("DB_CHANNEL")
+    if DB_CHANNEL:
+        DB_CHANNEL = int(DB_CHANNEL)
+
+    SHORTLINK_URL = os.environ.get("SHORTLINK_URL")
+    SHORTLINK_API = os.environ.get("SHORTLINK_API")
+    BOT_OWNER = int(os.environ.get("BOT_OWNER", "0"))
+
+    SUPABASE_URL = os.environ.get("SUPABASE_URL")
+    SUPABASE_KEY = (
+        os.environ.get("SUPABASE_SECRET_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+    )
+    DATABASE_URL = SUPABASE_URL
+
+    # Force Subscribe is intentionally disabled.
+    UPDATES_CHANNEL = None
+    LOG_CHANNEL = os.environ.get("LOG_CHANNEL") or None
+
+    # Delivery caption / join buttons. Use @username or a full https://t.me/... URL.
+    MAIN_CHANNEL = os.environ.get("MAIN_CHANNEL") or "@hjgroups_1"
+    BACKUP_CHANNEL = os.environ.get("BACKUP_CHANNEL") or None
     POCKET_LIBRARY = os.environ.get("POCKET_LIBRARY") or None
     DELIVERY_TAG = "@hjgroups_1"
 
@@ -63,3 +97,14 @@ Use **Commands** to view all available commands and features.
 ➜ `/set_caption` — Select an admin channel and set a caption across all or a message-ID range.
 
 🛡️ **Moderator Commands:**
+
+➜ `/special_link` — Create a batch link using your forwarded selection.
+➜ `/universal_link` — Create a batch link using your forwarded selection.
+➜ `/broadcast` — Broadcast a message to users.
+
+**Admin Commands**
+➜ `/status` — Show total registered users and open the user list.
+➜ `/ban_user` — Ban a user by `@username` for a number of days.
+➜ `/unban_user` — Remove a user ban by `@username`.
+➜ `/banned_users` — List banned users.
+"""
