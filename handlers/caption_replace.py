@@ -1798,7 +1798,18 @@ async def caption_maintenance_callback(_, query):
                 raise ValueError("That channel is already removed.")
             storage_ids = {int(x) for x in await db.get_storage_channels()}
             if channel_id in storage_ids:
-                raise ValueError("This is the HJ storage channel. Remove it from storage settings first; it cannot be removed from this maintenance registry by accident.")
+                await _safe_edit_text(
+                    query.message,
+                    f"⚠️ {selected.get('title') or channel_id} is also configured as an HJ storage channel.\\n\\nRemoving it here will remove it from the saved storage-channel list too. The Telegram channel itself and its messages will NOT be deleted.\\n\\nConfirm only if you intentionally want this channel removed from HJ storage.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            "⚠️ Remove From HJ Storage Too",
+                            callback_data=f"cap:remove_confirm:{channel_id}",
+                        )],
+                        [InlineKeyboardButton("Cancel", callback_data="cap:refresh")],
+                    ]),
+                )
+                raise StopPropagation
             remaining = [x for x in known if int(x["id"]) != channel_id]
             await db._set_setting(
                 _CHANNEL_REGISTRY_KEY,
@@ -1809,6 +1820,31 @@ async def caption_maintenance_callback(_, query):
             await _safe_edit_text(
                 query.message,
                 f"✅ Removed: {selected.get('title') or channel_id}\\n\\nThe channel will stay removed across deployments until you explicitly add it again.",
+                reply_markup=_channel_keyboard(channels, 0),
+            )
+            raise StopPropagation
+
+        if action == "remove_confirm":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+            channel_id = int(parts[2])
+            known = await _get_known_channels()
+            selected = next((x for x in known if int(x["id"]) == channel_id), None)
+            if selected is None:
+                raise ValueError("That channel is already removed.")
+            remaining = [x for x in known if int(x["id"]) != channel_id]
+            await db._set_setting(
+                _CHANNEL_REGISTRY_KEY,
+                json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
+            )
+            storage_ids = [int(x) for x in await db.get_storage_channels()]
+            await db.set_storage_channels([x for x in storage_ids if x != channel_id])
+            channels = await _discover_admin_channels()
+            session["channels"] = channels
+            await _safe_edit_text(
+                query.message,
+                f"✅ Removed: {selected.get('title') or channel_id}\\n\\nIt was removed from the saved channel registry and HJ storage-channel list.\\nThe Telegram channel itself and its messages were NOT deleted.\\n\\nIt will stay removed across deployments until you explicitly add it again.",
                 reply_markup=_channel_keyboard(channels, 0),
             )
             raise StopPropagation
