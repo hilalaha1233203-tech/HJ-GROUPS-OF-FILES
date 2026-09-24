@@ -5,6 +5,7 @@ Pyrogram client and existing Supabase bot_settings key/value store for checkpoin
 """
 import asyncio
 import copy
+import json
 import os
 import tempfile
 import time
@@ -54,10 +55,17 @@ def _allowed_channels():
     return result
 
 
+def _env_float(name, default):
+    try:
+        return max(0.0, float(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
 WORKERS = _env_int("CAPTION_REPLACE_WORKERS", 2, 2, 3)
 FETCH_BATCH = _env_int("CAPTION_REPLACE_FETCH_BATCH", 100, 1, 200)
 CHECKPOINT_EVERY = _env_int("CAPTION_REPLACE_CHECKPOINT_EVERY", 10, 1, 1000)
-EDIT_DELAY = max(0.0, float(os.environ.get("CAPTION_REPLACE_EDIT_DELAY", "0.15")))
+EDIT_DELAY = _env_float("CAPTION_REPLACE_EDIT_DELAY", 0.15)
 
 
 def _link(chat_id, message_id, username=None):
@@ -163,15 +171,20 @@ async def _get_job():
     if not raw:
         return None
     try:
-        value = __import__("json").loads(raw)
+        value = json.loads(raw)
     except Exception as exc:
         print(f"[CAPTION_REPLACE] Invalid saved job: {exc}")
         return None
-    return value if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        return None
+    required = {"status", "mode", "chat_id", "start_id", "end_id", "find", "replace"}
+    if not required.issubset(value):
+        print("[CAPTION_REPLACE] Ignoring incomplete saved job state.")
+        return None
+    return value
 
 
 async def _set_job(job):
-    import json
     job["updated_at"] = int(time.time())
     try:
         async with _PERSIST_LOCK:
