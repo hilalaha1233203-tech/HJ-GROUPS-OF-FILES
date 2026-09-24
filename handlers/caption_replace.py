@@ -1478,3 +1478,270 @@ async def caption_maintenance_callback(_, query):
     action = parts[1] if len(parts) > 1 else ""
 
     try:
+        if action == "cancel":
+            _SESSIONS.pop(user_id, None)
+            await query.message.edit_text("Caption maintenance setup cancelled.")
+            raise StopPropagation
+
+        if action == "add":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+
+            session["step"] = "add_channel"
+            await query.message.edit_text(
+                "➕ Add / Check Channel\n\n"
+                "Send the target channel @username, t.me/username, or numeric channel ID.\n"
+                "For private channels, the safest method is to forward one message "
+                "from that channel to this chat.\n\n"
+                "The bot must be an Administrator and have Edit Messages permission."
+            )
+            raise StopPropagation
+
+        if action == "refresh":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+
+            channels = await _discover_admin_channels()
+            session["channels"] = channels
+            await query.message.edit_text(
+                f"{session['operation'].title().replace('_', ' ')} — Select Target Channel\n\n"
+                f"Found {len(channels)} editable channel(s).",
+                reply_markup=_channel_keyboard(channels, 0),
+            )
+            raise StopPropagation
+
+        if action == "page":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+
+            markup = _channel_keyboard(
+                session.get("channels") or [],
+                int(parts[2]),
+            )
+            await query.message.edit_reply_markup(markup)
+            raise StopPropagation
+
+        if action == "channel":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+
+            index = int(parts[2])
+            channels = session.get("channels") or []
+            if index < 0 or index >= len(channels):
+                raise ValueError("Channel selection expired. Refresh the list.")
+
+            selected = channels[index]
+            chat = await _resolve_target(selected["id"], selected.get("username"))
+            session.update(
+                step="range",
+                chat_id=int(selected["id"]),
+                target_title=getattr(chat, "title", "") or selected["title"],
+                target_username=getattr(chat, "username", "") or selected["username"],
+            )
+
+            if session["operation"] == "replace":
+                session["step"] = "start"
+                prompt = (
+                    "Selected channel: "
+                    f"{session['target_title']} ({session['chat_id']})\n\n"
+                    "Send the START message ID."
+                )
+            else:
+                prompt = (
+                    "Selected channel: "
+                    f"{session['target_title']} ({session['chat_id']})\n\n"
+                    "Send ALL for the entire channel, or two IDs such as 1 500."
+                )
+
+            await query.message.edit_text(prompt)
+            raise StopPropagation
+
+        if action == "new":
+            if _JOB_TASK is not None and not _JOB_TASK.done():
+                raise ValueError("Stop the current job first.")
+            _SESSIONS.pop(user_id, None)
+            await query.message.reply_text(
+                "Use /caption_replace or /set_caption to start a new maintenance job."
+            )
+            raise StopPropagation
+
+        if action in {"start", "dry"}:
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "review":
+                raise ValueError("The setup session expired. Run the command again.")
+
+            if _JOB_TASK is not None and not _JOB_TASK.done():
+                raise ValueError("Another caption maintenance job is already running.")
+
+            try:
+                job = await _create_job_from_session(
+                    user_id,
+                    dry_run=(action == "dry"),
+                )
+            except RuntimeError as exc:
+                if str(exc) != "STORAGE_CONFIRM_REQUIRED":
+                    raise
+
+                await query.message.edit_text(
+                    _review(session, storage_warning=True),
+                    reply_markup=InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton(
+                                "Confirm Storage Edit",
+                                callback_data=f"cap:confirm:{action}",
+                            ),
+                            InlineKeyboardButton(
+                                "Cancel",
+                                callback_data="cap:cancel",
+                            ),
+                        ]
+                    ]),
+                )
+                raise StopPropagation
+
+            await query.message.edit_text(
+                _status_text(job),
+                reply_markup=_keyboard(job, active=True),
+            )
+            _start_task(job, query.message)
+            raise StopPropagation
+
+        if action == "confirm":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "review":
+                raise ValueError("The setup session expired. Run the command again.")
+
+            await _resolve_target(int(session["chat_id"]), session.get("target_username"))
+            job = _make_job(
+                session,
+                dry_run=(len(parts) > 2 and parts[2] == "dry"),
+            )
+            _SESSIONS.pop(user_id, None)
+            await _set_job(job)
+
+            await query.message.edit_text(
+                _status_text(job),
+                reply_markup=_keyboard(job, active=True),
+            )
+            _start_task(job, query.message)
+            raise StopPropagation
+
+        job = _RUNTIME["job"] if _RUNTIME is not None else await _get_job()
+        if not job:
+            raise ValueError("No saved caption maintenance job found.")
+
+        state = str(job.get("status", "")).lower()
+
+        if action == "status":
+            await query.message.edit_text(
+                _status_text(job),
+                reply_markup=_keyboard(
+                    job,
+                    active=_JOB_TASK is not None and not _JOB_TASK.done(),
+                ),
+            )
+            raise StopPropagation
+
+        if action == "pause":
+            if _RUNTIME is None or _JOB_TASK is None or _JOB_TASK.done():
+                raise ValueError("Worker is not active. Use Resume.")
+
+            _RUNTIME["pause"].clear()
+            job["status"] = "paused"
+            await _set_job(job)
+            await query.message.edit_text(
+                _status_text(job),
+                reply_markup=_keyboard(job, active=False),
+            )
+            raise StopPropagation
+
+        if action == "resume":
+            if _JOB_TASK is not None and not _JOB_TASK.done():
+                if _RUNTIME is not None:
+                    _RUNTIME["pause"].set()
+                    job["status"] = "running"
+                    await _set_job(job)
+                    await query.message.edit_text(
+                        _status_text(job),
+                        reply_markup=_keyboard(job, active=True),
+                    )
+                raise StopPropagation
+
+            if state not in {"running", "paused", "stopped", "failed"}:
+                raise ValueError(
+                    "This job is completed. Use New Job or Retry Failed IDs."
+                )
+
+            await _resolve_target(int(job["chat_id"]))
+            job["status"] = "running"
+            job["fatal_error"] = ""
+            await _set_job(job)
+            await query.message.edit_text(
+                _status_text(job),
+                reply_markup=_keyboard(job, active=True),
+            )
+            _start_task(job, query.message)
+            raise StopPropagation
+
+        if action == "stop":
+            if _RUNTIME is not None and _JOB_TASK is not None and not _JOB_TASK.done():
+                _RUNTIME["stop"].set()
+                job["status"] = "stopping"
+                await _set_job(job)
+                await query.message.edit_text(
+                    _status_text(job),
+                    reply_markup=_keyboard(job, active=False),
+                )
+            else:
+                job["status"] = "stopped"
+                await _set_job(job)
+                await query.message.edit_text(
+                    _status_text(job),
+                    reply_markup=_keyboard(job, active=False),
+                )
+            raise StopPropagation
+
+        if action == "retry":
+            if _JOB_TASK is not None and not _JOB_TASK.done():
+                raise ValueError("Another caption maintenance job is already running.")
+
+            failed = [int(item) for item in job.get("failed_ids") or []]
+            if not failed:
+                raise ValueError("There are no failed message IDs to retry.")
+
+            await _resolve_target(int(job["chat_id"]))
+            retry_job = copy.deepcopy(job)
+            retry_job.update({
+                "status": "running",
+                "run_mode": "retry",
+                "retry_ids": failed,
+                "retry_total": len(failed),
+                "done_ids": [],
+                "skipped_ids": [],
+                "changed": 0,
+                "skipped": 0,
+                "last_error": "",
+                "fatal_error": "",
+                "failed_ids": [],
+            })
+            await _set_job(retry_job)
+
+            await query.message.edit_text(
+                _status_text(retry_job),
+                reply_markup=_keyboard(retry_job, active=True),
+            )
+            _start_task(retry_job, query.message)
+            raise StopPropagation
+
+        raise ValueError("Unknown maintenance action.")
+
+    except StopPropagation:
+        raise
+    except Exception as exc:
+        await query.answer(str(exc)[:190], show_alert=True)
+
+    raise StopPropagation
