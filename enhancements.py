@@ -11,6 +11,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import bot_legacy
 from configs import Config
 from handlers.database import db
+from handlers.telegram_api import copy_message as api_copy_message
 from handlers import save_media, send_file
 Bot = bot_legacy.Bot
 OWNER = int(Config.BOT_OWNER or 0)
@@ -79,32 +80,25 @@ def _caption_text(message, template):
 async def _caption(message): return _caption_text(message, await _get("custom_caption", ""))
 
 async def _ensure_peer(bot, chat_id):
-    """Make sure a Telegram peer is present in Pyrogram's cache after restarts."""
+    """Validate a channel without using the bot-forbidden get_dialogs() API.
+
+    Bot API getChat can resolve a private channel ID after a restart. It does
+    not populate Pyrogram's MTProto peer cache, so callers that need to copy
+    old private-channel messages should use the Bot API copyMessage fallback.
+    """
     chat_id = int(chat_id)
     try:
-        await bot.resolve_peer(chat_id)
+        from handlers.telegram_api import get_chat as api_get_chat
+        chat = await api_get_chat(chat_id)
+        if str((chat or {}).get("type") or "") not in {"channel", "supergroup"}:
+            raise RuntimeError(f"Telegram chat {chat_id} is not a channel/supergroup.")
         return chat_id
-    except PeerIdInvalid:
-        pass
-    except Exception:
-        pass
-
-    # This bot uses an in-memory Pyrogram session. After a restart/redeploy the
-    # peer cache is empty. get_dialogs() refreshes Telegram peers and stores the
-    # channel access_hash required by get_messages/copy_message.
-    try:
-        async for dialog in bot.get_dialogs():
-            chat = getattr(dialog, "chat", None)
-            if chat is not None and int(chat.id) == chat_id:
-                await bot.resolve_peer(chat_id)
-                return chat_id
     except Exception as exc:
-        raise RuntimeError(f"Could not refresh Telegram peers: {exc}") from exc
-
-    raise RuntimeError(
-        f"Telegram source channel {chat_id} is not available to this bot session. "
-        "Make sure the bot is still a member/admin of that private channel."
-    )
+        raise RuntimeError(
+            f"Telegram source channel {chat_id} is not available to this bot. "
+            "Make sure the bot is still a member/admin of that channel. "
+            f"Details: {exc}"
+        ) from exc
 
 async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
     channel_id=channel_id or await db.get_db_channel_id()
@@ -275,29 +269,33 @@ async def direct_start(bot,m):
 
 async def _deliver_direct(bot,user_id,items):
     ids=[]; protect=await db.get_protect_content(); template=await _get("custom_caption","")
-    warmed=set()
     for chat_id,mid in items:
         chat_id=int(chat_id); mid=int(mid)
-        if chat_id not in warmed:
-            await _ensure_peer(bot,chat_id)
-            warmed.add(chat_id)
+        await _ensure_peer(bot,chat_id)
+        # Bot API copyMessage accepts private channel IDs directly and avoids
+        # Pyrogram's fresh-session PEER_ID_INVALID/access-hash problem.
         source=None
         try:
             source=await bot.get_messages(chat_id,mid)
-        except PeerIdInvalid:
-            # A fresh worker can lose the peer cache between link creation and
-            # delivery. Refresh once and retry before returning an error.
-            await _ensure_peer(bot,chat_id)
-            source=await bot.get_messages(chat_id,mid)
         except Exception:
             source=None
-        try:
-            sent=await bot.copy_message(chat_id=user_id,from_chat_id=chat_id,message_id=mid,caption=_caption_text(source,template) if source else None,protect_content=protect,reply_markup=_buttons_markup())
-        except PeerIdInvalid:
-            await _ensure_peer(bot,chat_id)
-            sent=await bot.copy_message(chat_id=user_id,from_chat_id=chat_id,message_id=mid,caption=_caption_text(source,template) if source else None,protect_content=protect,reply_markup=_buttons_markup())
+        caption=_caption_text(source,template) if source else None
+        markup=None
+        rows=[]
+        for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
+            u=_url(BUTTON_CACHE.get(k))
+            if u: rows.append([{"text":l,"url":u}])
+        if rows: markup={"inline_keyboard":rows}
+        sent=await api_copy_message(
+            chat_id=int(user_id),
+            from_chat_id=chat_id,
+            message_id=mid,
+            protect_content=protect,
+            caption=caption,
+            reply_markup=markup,
+        )
         sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
-        if sid:ids.append(int(sid))
+        if sid: ids.append(int(sid))
     delay=await db.get_auto_delete_seconds()
     if delay>0 and ids:
         notice=await send_file.send_delete_notice(bot,user_id,delay); nid=getattr(notice,"id",None) if notice else None; delete_ids=ids+([int(nid)] if nid else []); task=asyncio.create_task(send_file._delete_delivered_messages(bot,user_id,delete_ids,delay)); send_file._track_delete_task(task)
