@@ -9,6 +9,7 @@ and storage architecture is not changed.
 """
 import asyncio
 import copy
+import html
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import bot_legacy
 from configs import Config
 from handlers.database import db
+from handlers import send_file
 from handlers.telegram_api import (
     get_chat as api_get_chat,
     get_chat_member as api_get_chat_member,
@@ -660,6 +662,32 @@ async def _latest_message_id(chat_id):
     raise ValueError("Could not determine the latest message ID.")
 
 
+
+def _render_set_caption(template, message):
+    """Render Set Caption placeholders separately for each media message."""
+    template = str(template or "")
+    try:
+        name, size = send_file._file_meta(message)
+        size_text = send_file.human_size(size)
+    except Exception:
+        name, size_text = "Telegram Media", "Unknown"
+    user = getattr(message, "from_user", None)
+    values = {
+        "file_name": str(name or "Telegram Media"),
+        "file_size": str(size_text or "Unknown"),
+        "caption": str(getattr(message, "caption", None) or ""),
+        "username": str(getattr(user, "username", "") or "") if user else "",
+        "user_id": str(getattr(user, "id", "") or "") if user else "",
+        "first_name": str(getattr(user, "first_name", "") or "") if user else "",
+    }
+    is_html = bool(re.search(r"</?(?:b|strong|i|em|u|s|code|pre|a)(?:\\s|>)", template, re.I))
+    for key, value in values.items():
+        replacement = html.escape(value, quote=True) if is_html else value
+        template = template.replace("{" + key + "}", replacement)
+    if _caption_units(template) > 1024:
+        raise ValueError("Rendered caption exceeds Telegram's 1024-character limit.")
+    return template, ("html" if is_html else None)
+
 def _make_job(session, dry_run=False):
     return {
         "status": "running",
@@ -736,7 +764,7 @@ async def _edit_one(job, message):
             return "skipped"
 
     elif operation == "set":
-        new = str(job.get("set_caption", ""))
+        new, parse_mode = _render_set_caption(str(job.get("set_caption", "")), message)
         if old == new:
             return "skipped"
     else:
@@ -752,7 +780,7 @@ async def _edit_one(job, message):
         "chat_id": int(job["chat_id"]),
         "message_id": int(message.id),
         "caption": new,
-        "parse_mode": None,
+        "parse_mode": parse_mode if operation == "set" else None,
     }
 
     if operation == "replace":
@@ -1052,9 +1080,14 @@ def _review(session, storage_warning=False):
         ])
     else:
         lines.extend([
-            f"SET CAPTION: {session['set_caption']}",
+            f"SET CAPTION TEMPLATE: {session['set_caption']}",
             "",
-            "Every media message in this range receives exactly this caption.",
+            "Placeholders are rendered separately for every media message:",
+            "{file_name} = original file name",
+            "{file_size} = human-readable file size",
+            "{caption} = original caption",
+            "{username}, {user_id}, {first_name} = original sender fields",
+            "HTML tags such as <code>, <i>, <b> are supported automatically.",
             "Text-only messages are skipped because they have no caption.",
         ])
 
@@ -1348,8 +1381,13 @@ async def caption_maintenance_input(_, message):
                 )
             else:
                 await message.reply_text(
-                    "Send the complete caption to set.\n"
-                    "It will be written as literal text, without Markdown/HTML parsing."
+                    "Send the caption template to set.\n\n"
+                    "Supported: {file_name}, {file_size}, {caption}, {username}, {user_id}, {first_name}\n"
+                    "Example:\n"
+                    "<code>• 🎥 File Name : {file_name}</code><i> </i>\n"
+                    "<code>• 💾 File size : {file_size}</code><i> </i>\n"
+                    "• ❤️ @hjgroups_1\n\n"
+                    "Each message gets its own file name and size automatically. HTML tags such as <code>/<i>/<b> are supported."
                 )
 
         elif step == "range":
@@ -1376,7 +1414,7 @@ async def caption_maintenance_input(_, message):
             session["step"] = "caption"
             await message.reply_text(
                 f"Range selected: {session['start_id']} -> {session['end_id']}\n\n"
-                "Send the complete caption to set."
+                "Send the caption template to set. Use {file_name} and {file_size} for automatic per-file values."
             )
 
         elif step == "find":
