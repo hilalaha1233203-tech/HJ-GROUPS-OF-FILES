@@ -579,11 +579,30 @@ def _channel_keyboard(channels, page=0):
     return InlineKeyboardMarkup(rows)
 
 
-async def _resolve_target(chat_id):
-    chat = await _flood(
-        lambda: Bot.get_chat(int(chat_id)),
-        f"target lookup {chat_id}",
-    )
+async def _resolve_target(chat_id, username=None):
+    username = str(username or "").strip().lstrip("@")
+    try:
+        chat = await _flood(
+            lambda: Bot.get_chat(int(chat_id)),
+            f"target lookup {chat_id}",
+        )
+    except Exception as first_error:
+        if not username:
+            raise ValueError(
+                "Telegram peer is not available in this bot session. "
+                "Forward one message from the channel to this bot, then select it again."
+            ) from first_error
+        try:
+            chat = await _flood(
+                lambda: Bot.get_chat("@" + username),
+                f"target lookup @{username}",
+            )
+        except Exception as second_error:
+            raise ValueError(
+                "Telegram could not resolve the selected channel. "
+                "For a private channel, forward one message from that channel."
+            ) from second_error
+
     if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
         raise ValueError("Selected target is not a Telegram channel.")
 
@@ -1104,6 +1123,59 @@ async def _start_new(message, operation):
     )
 
 
+@Bot.on_message(filters.channel, group=-10)
+async def _observe_channel_message(_, message):
+    chat = getattr(message, "chat", None)
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        return
+    chat_id = int(chat.id)
+    seen = globals().setdefault("_RUNTIME_CHANNEL_SEEN", set())
+    if chat_id in seen:
+        return
+    seen.add(chat_id)
+    try:
+        await _remember_channel(chat)
+    except Exception as exc:
+        print(
+            f"[CAPTION_MAINTENANCE] channel observation failed for "
+            f"{chat_id}: {exc}"
+        )
+
+
+@Bot.on_chat_member_updated(group=-10)
+async def _observe_channel_membership(_, update):
+    chat = getattr(update, "chat", None)
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        return
+
+    old_member = getattr(update, "old_chat_member", None)
+    new_member = getattr(update, "new_chat_member", None)
+    old_user = getattr(old_member, "user", None)
+    new_user = getattr(new_member, "user", None)
+    try:
+        me = await Bot.get_me()
+        bot_id = int(me.id)
+    except Exception:
+        return
+
+    if not (
+        (old_user is not None and int(old_user.id) == bot_id)
+        or (new_user is not None and int(new_user.id) == bot_id)
+    ):
+        return
+
+    status = str(getattr(new_member, "status", "")).lower()
+    is_admin = "administrator" in status or "creator" in status or "owner" in status
+    if is_admin:
+        try:
+            await _remember_channel(chat)
+        except Exception as exc:
+            print(
+                f"[CAPTION_MAINTENANCE] membership registration failed for "
+                f"{chat.id}: {exc}"
+            )
+
+
 @Bot.on_message(filters.private & filters.command("caption_replace"), group=-3)
 async def caption_replace_command(_, message):
     if not _owner(message.from_user.id):
@@ -1344,7 +1416,10 @@ async def _create_job_from_session(user_id, dry_run=False):
     if not session or session.get("step") != "review":
         raise ValueError("The setup session expired. Run the command again.")
 
-    await _resolve_target(int(session["chat_id"]))
+    await _resolve_target(
+        int(session["chat_id"]),
+        session.get("target_username"),
+    )
 
     if await _storage_selected(session["chat_id"]):
         raise RuntimeError("STORAGE_CONFIRM_REQUIRED")
@@ -1433,7 +1508,10 @@ async def caption_maintenance_callback(_, query):
                 raise ValueError("Channel selection expired. Refresh the list.")
 
             selected = channels[index]
-            chat = await _resolve_target(selected["id"])
+            chat = await _resolve_target(
+                selected["id"],
+                selected.get("username"),
+            )
             session.update(
                 step="range",
                 chat_id=int(selected["id"]),
@@ -1448,198 +1526,3 @@ async def caption_maintenance_callback(_, query):
                     f"{session['target_title']} ({session['chat_id']})\n\n"
                     "Send the START message ID."
                 )
-            else:
-                prompt = (
-                    "Selected channel: "
-                    f"{session['target_title']} ({session['chat_id']})\n\n"
-                    "Send ALL for the entire channel, or two IDs such as 1 500."
-                )
-
-            await query.message.edit_text(prompt)
-            raise StopPropagation
-
-        if action == "new":
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                raise ValueError("Stop the current job first.")
-            _SESSIONS.pop(user_id, None)
-            await query.message.reply_text(
-                "Use /caption_replace or /set_caption to start a new maintenance job."
-            )
-            raise StopPropagation
-
-        if action in {"start", "dry"}:
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "review":
-                raise ValueError("The setup session expired. Run the command again.")
-
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                raise ValueError("Another caption maintenance job is already running.")
-
-            try:
-                job = await _create_job_from_session(
-                    user_id,
-                    dry_run=(action == "dry"),
-                )
-            except RuntimeError as exc:
-                if str(exc) != "STORAGE_CONFIRM_REQUIRED":
-                    raise
-
-                await query.message.edit_text(
-                    _review(session, storage_warning=True),
-                    reply_markup=InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton(
-                                "Confirm Storage Edit",
-                                callback_data=f"cap:confirm:{action}",
-                            ),
-                            InlineKeyboardButton(
-                                "Cancel",
-                                callback_data="cap:cancel",
-                            ),
-                        ]
-                    ]),
-                )
-                raise StopPropagation
-
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=True),
-            )
-            _start_task(job, query.message)
-            raise StopPropagation
-
-        if action == "confirm":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "review":
-                raise ValueError("The setup session expired. Run the command again.")
-
-            await _resolve_target(int(session["chat_id"]))
-            job = _make_job(
-                session,
-                dry_run=(len(parts) > 2 and parts[2] == "dry"),
-            )
-            _SESSIONS.pop(user_id, None)
-            await _set_job(job)
-
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=True),
-            )
-            _start_task(job, query.message)
-            raise StopPropagation
-
-        job = _RUNTIME["job"] if _RUNTIME is not None else await _get_job()
-        if not job:
-            raise ValueError("No saved caption maintenance job found.")
-
-        state = str(job.get("status", "")).lower()
-
-        if action == "status":
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(
-                    job,
-                    active=_JOB_TASK is not None and not _JOB_TASK.done(),
-                ),
-            )
-            raise StopPropagation
-
-        if action == "pause":
-            if _RUNTIME is None or _JOB_TASK is None or _JOB_TASK.done():
-                raise ValueError("Worker is not active. Use Resume.")
-
-            _RUNTIME["pause"].clear()
-            job["status"] = "paused"
-            await _set_job(job)
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=False),
-            )
-            raise StopPropagation
-
-        if action == "resume":
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                if _RUNTIME is not None:
-                    _RUNTIME["pause"].set()
-                    job["status"] = "running"
-                    await _set_job(job)
-                    await query.message.edit_text(
-                        _status_text(job),
-                        reply_markup=_keyboard(job, active=True),
-                    )
-                raise StopPropagation
-
-            if state not in {"running", "paused", "stopped", "failed"}:
-                raise ValueError(
-                    "This job is completed. Use New Job or Retry Failed IDs."
-                )
-
-            await _resolve_target(int(job["chat_id"]))
-            job["status"] = "running"
-            job["fatal_error"] = ""
-            await _set_job(job)
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=True),
-            )
-            _start_task(job, query.message)
-            raise StopPropagation
-
-        if action == "stop":
-            if _RUNTIME is not None and _JOB_TASK is not None and not _JOB_TASK.done():
-                _RUNTIME["stop"].set()
-                job["status"] = "stopping"
-                await _set_job(job)
-                await query.message.edit_text(
-                    _status_text(job),
-                    reply_markup=_keyboard(job, active=False),
-                )
-            else:
-                job["status"] = "stopped"
-                await _set_job(job)
-                await query.message.edit_text(
-                    _status_text(job),
-                    reply_markup=_keyboard(job, active=False),
-                )
-            raise StopPropagation
-
-        if action == "retry":
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                raise ValueError("Another caption maintenance job is already running.")
-
-            failed = [int(item) for item in job.get("failed_ids") or []]
-            if not failed:
-                raise ValueError("There are no failed message IDs to retry.")
-
-            await _resolve_target(int(job["chat_id"]))
-            retry_job = copy.deepcopy(job)
-            retry_job.update({
-                "status": "running",
-                "run_mode": "retry",
-                "retry_ids": failed,
-                "retry_total": len(failed),
-                "done_ids": [],
-                "skipped_ids": [],
-                "changed": 0,
-                "skipped": 0,
-                "last_error": "",
-                "fatal_error": "",
-                "failed_ids": [],
-            })
-            await _set_job(retry_job)
-
-            await query.message.edit_text(
-                _status_text(retry_job),
-                reply_markup=_keyboard(retry_job, active=True),
-            )
-            _start_task(retry_job, query.message)
-            raise StopPropagation
-
-        raise ValueError("Unknown maintenance action.")
-
-    except StopPropagation:
-        raise
-    except Exception as exc:
-        await query.answer(str(exc)[:190], show_alert=True)
-
-    raise StopPropagation
