@@ -375,10 +375,15 @@ async def _get_known_channels():
         if chat_id in seen:
             continue
         seen.add(chat_id)
+        try:
+            access_hash = int(item.get("access_hash")) if item.get("access_hash") is not None else None
+        except (TypeError, ValueError):
+            access_hash = None
         result.append({
             "id": chat_id,
             "title": str(item.get("title") or "Telegram Channel"),
             "username": str(item.get("username") or "").lstrip("@"),
+            "access_hash": access_hash,
         })
     return result
 
@@ -393,10 +398,27 @@ async def _remember_channel(chat):
         return
 
     current = await _get_known_channels()
+    existing = next((x for x in current if int(x["id"]) == chat_id), {})
+    access_hash = existing.get("access_hash")
+
+    # A Pyrogram deployment can lose its local peer database on every restart.
+    # Persist the channel access_hash in Supabase and restore it into Pyrogram's
+    # peer cache so private numeric channel IDs remain usable after deployment.
+    try:
+        ref = getattr(chat, "username", None) or chat_id
+        peer = await _flood(
+            lambda target=ref: Bot.resolve_peer(target),
+            f"resolve persistent peer {ref}",
+        )
+        access_hash = int(getattr(peer, "access_hash", access_hash))
+    except Exception as exc:
+        print(f"[CAPTION_MAINTENANCE] peer cache capture failed for {chat_id}: {exc}")
+
     item = {
         "id": chat_id,
         "title": str(getattr(chat, "title", "") or "Telegram Channel"),
         "username": str(getattr(chat, "username", "") or "").lstrip("@"),
+        "access_hash": access_hash,
     }
 
     updated = []
@@ -419,6 +441,58 @@ async def _remember_channel(chat):
         )
     except Exception as exc:
         print(f"[CAPTION_MAINTENANCE] channel registry save failed: {exc}")
+
+
+async def _hydrate_channel_peer(item):
+    """Restore a saved channel peer into Pyrogram after a fresh deployment."""
+    try:
+        chat_id = int(item.get("id"))
+        access_hash = item.get("access_hash")
+        username = str(item.get("username") or "").lstrip("@")
+        if access_hash is None:
+            # Public usernames can self-heal the first time after deployment.
+            if not username:
+                return False
+            peer = await _flood(
+                lambda: Bot.resolve_peer("@" + username),
+                f"hydrate public peer @{username}",
+            )
+            access_hash = int(getattr(peer, "access_hash"))
+            item["access_hash"] = access_hash
+            try:
+                await db._set_setting(
+                    _CHANNEL_REGISTRY_KEY,
+                    json.dumps(
+                        [
+                            dict(x, access_hash=(access_hash if int(x.get("id")) == chat_id else x.get("access_hash")))
+                            for x in await _get_known_channels()
+                        ],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
+            except Exception:
+                pass
+        if access_hash is None:
+            return False
+
+        # Pyrogram 2.x stores peers as (id, access_hash, type, username, phone).
+        # Older builds accepted the four-field form, so retain a compatibility fallback.
+        rows5 = [(chat_id, int(access_hash), "channel", username or None, None)]
+        try:
+            await Bot.storage.update_peers(rows5)
+        except TypeError:
+            await Bot.storage.update_peers([(chat_id, int(access_hash), "channel", username or None)])
+        return True
+    except Exception as exc:
+        print(f"[CAPTION_MAINTENANCE] peer hydration failed for {item.get('id')}: {exc}")
+        return False
+
+
+async def _hydrate_saved_channel_peers():
+    known = await _get_known_channels()
+    for item in known:
+        await _hydrate_channel_peer(item)
 
 
 def _forward_source(message):
@@ -507,6 +581,8 @@ async def _discover_admin_channels():
     refreshed = []
 
     for item in by_id.values():
+        await _hydrate_channel_peer(item)
+
         chat_id = int(item["id"])
         username = str(item.get("username") or "").lstrip("@")
         ref = "@" + username if username else chat_id
@@ -573,6 +649,7 @@ async def _discover_admin_channels():
             "id": canonical_id,
             "title": title,
             "username": current_username,
+            "access_hash": item.get("access_hash"),
         })
 
     old_by_id = {int(item["id"]): item for item in known}
@@ -604,11 +681,17 @@ def _channel_keyboard(channels, page=0):
     current = channels[start:start + _CHANNELS_PER_PAGE]
 
     rows = [
-        [InlineKeyboardButton(
-            _channel_label(item),
-            callback_data=f"cap:channel:{int(item['id'])}",
-        )]
-        for offset, item in enumerate(current)
+        [
+            InlineKeyboardButton(
+                _channel_label(item),
+                callback_data=f"cap:channel:{int(item['id'])}",
+            ),
+            InlineKeyboardButton(
+                "🗑",
+                callback_data=f"cap:remove:{int(item['id'])}",
+            ),
+        ]
+        for item in current
     ]
 
     nav = []
@@ -631,7 +714,11 @@ def _channel_keyboard(channels, page=0):
         InlineKeyboardButton(
             "➕ Add / Check Channel",
             callback_data="cap:add",
-        )
+        ),
+        InlineKeyboardButton(
+            "🗑 Remove Channel",
+            callback_data="cap:remove_menu",
+        ),
     ])
     rows.append([
         InlineKeyboardButton(
@@ -1675,6 +1762,54 @@ async def caption_maintenance_callback(_, query):
                 "For private channels, the safest method is to forward one message "
                 "from that channel to this chat.\n\n"
                 "The bot must be an Administrator and have Edit Messages permission."
+            )
+            raise StopPropagation
+
+        if action == "remove_menu":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+            channels = session.get("channels") or []
+            if not channels:
+                raise ValueError("There are no saved channels to remove.")
+            rows = [
+                [InlineKeyboardButton(
+                    _channel_label(item),
+                    callback_data=f"cap:remove:{int(item['id'])}",
+                )]
+                for item in channels
+            ]
+            rows.append([InlineKeyboardButton("Back", callback_data="cap:refresh")])
+            await _safe_edit_text(
+                query.message,
+                "🗑 Remove Channel\\n\\nSelect the channel you want to remove from the saved caption-maintenance list.\\n\\nThis only removes the saved channel entry; it does NOT delete the Telegram channel or its messages.",
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            raise StopPropagation
+
+        if action == "remove":
+            session = _SESSIONS.get(user_id)
+            if not session or session.get("step") != "channels":
+                raise ValueError("Channel selector expired. Run the command again.")
+            channel_id = int(parts[2])
+            known = await _get_known_channels()
+            selected = next((x for x in known if int(x["id"]) == channel_id), None)
+            if selected is None:
+                raise ValueError("That channel is already removed.")
+            storage_ids = {int(x) for x in await db.get_storage_channels()}
+            if channel_id in storage_ids:
+                raise ValueError("This is the HJ storage channel. Remove it from storage settings first; it cannot be removed from this maintenance registry by accident.")
+            remaining = [x for x in known if int(x["id"]) != channel_id]
+            await db._set_setting(
+                _CHANNEL_REGISTRY_KEY,
+                json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
+            )
+            channels = await _discover_admin_channels()
+            session["channels"] = channels
+            await _safe_edit_text(
+                query.message,
+                f"✅ Removed: {selected.get('title') or channel_id}\\n\\nThe channel will stay removed across deployments until you explicitly add it again.",
+                reply_markup=_channel_keyboard(channels, 0),
             )
             raise StopPropagation
 
