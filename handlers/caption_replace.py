@@ -3,9 +3,9 @@
 Caption Replace performs exact FIND -> REPLACE inside media captions.
 Set Caption replaces the complete caption on selected media messages.
 
-Targets are discovered dynamically from channels where this bot is an administrator
-with message-edit permission. The existing FileStore and storage architecture is
-not changed.
+Targets are maintained in a persistent bot-compatible channel registry and are
+revalidated for administrator/edit permission before use. The existing FileStore
+and storage architecture is not changed.
 """
 import asyncio
 import copy
@@ -56,6 +56,7 @@ _MAX_RANGE = 200000
 _STATUS_EVERY = 25
 _CHANNEL_REGISTRY_KEY = "caption_admin_channels"
 _MAX_KNOWN_CHANNELS = 500
+_RUNTIME_CHANNEL_SEEN = set()
 
 
 def _owner(user_id):
@@ -1129,7 +1130,7 @@ async def _observe_channel_message(_, message):
     if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
         return
     chat_id = int(chat.id)
-    seen = globals().setdefault("_RUNTIME_CHANNEL_SEEN", set())
+    seen = _RUNTIME_CHANNEL_SEEN
     if chat_id in seen:
         return
     seen.add(chat_id)
@@ -1448,81 +1449,3 @@ async def caption_maintenance_callback(_, query):
     action = parts[1] if len(parts) > 1 else ""
 
     try:
-        if action == "cancel":
-            _SESSIONS.pop(user_id, None)
-            await query.message.edit_text("Caption maintenance setup cancelled.")
-            raise StopPropagation
-
-        if action == "add":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            session["step"] = "add_channel"
-            await query.message.edit_text(
-                "➕ Add / Check Channel\n\n"
-                "Send one of these:\n"
-                "• Channel @username\n"
-                "• t.me/username\n"
-                "• Numeric channel ID\n"
-                "• Forward one message from the target channel (recommended for private channels)\n\n"
-                "The bot will verify that it is an administrator with permission to edit channel messages.\n"
-                "Send /cancel to stop."
-            )
-            raise StopPropagation
-
-        if action == "refresh":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            channels = await _discover_admin_channels()
-            session["channels"] = channels
-            await query.message.edit_text(
-                f"{session['operation'].title().replace('_', ' ')} — Select Target Channel\n\n"
-                f"Found {len(channels)} editable channel(s).",
-                reply_markup=_channel_keyboard(channels, 0),
-            )
-            raise StopPropagation
-
-        if action == "page":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            markup = _channel_keyboard(
-                session.get("channels") or [],
-                int(parts[2]),
-            )
-            await query.message.edit_reply_markup(markup)
-            raise StopPropagation
-
-        if action == "channel":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            index = int(parts[2])
-            channels = session.get("channels") or []
-            if index < 0 or index >= len(channels):
-                raise ValueError("Channel selection expired. Refresh the list.")
-
-            selected = channels[index]
-            chat = await _resolve_target(
-                selected["id"],
-                selected.get("username"),
-            )
-            session.update(
-                step="range",
-                chat_id=int(selected["id"]),
-                target_title=getattr(chat, "title", "") or selected["title"],
-                target_username=getattr(chat, "username", "") or selected["username"],
-            )
-
-            if session["operation"] == "replace":
-                session["step"] = "start"
-                prompt = (
-                    "Selected channel: "
-                    f"{session['target_title']} ({session['chat_id']})\n\n"
-                    "Send the START message ID."
-                )
