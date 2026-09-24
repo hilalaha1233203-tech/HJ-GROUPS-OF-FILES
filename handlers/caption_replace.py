@@ -18,7 +18,14 @@ import time
 
 from pyrogram import enums, filters, StopPropagation
 from pyrogram.errors import FloodWait
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaAnimation,
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaVideo,
+)
 
 import bot_legacy
 from configs import Config
@@ -228,6 +235,8 @@ async def _get_job():
         required.update({"find", "replace"})
     elif value.get("operation") == "set":
         required.add("set_caption")
+    elif value.get("operation") == "thumbnail":
+        required.add("thumbnail_file_id")
     else:
         print("[CAPTION_MAINTENANCE] Ignoring unknown saved operation.")
         return None
@@ -273,11 +282,11 @@ def _progress(job):
 
 def _status_text(job):
     processed, total = _progress(job)
-    operation = (
-        "Caption Replace"
-        if job.get("operation") == "replace"
-        else "Set Caption"
-    )
+    operation = {
+        "replace": "Caption Replace",
+        "set": "Set Caption",
+        "thumbnail": "Set Thumbnail",
+    }.get(job.get("operation"), "Caption Maintenance")
     run_mode = (
         "Retry Failed IDs"
         if str(job.get("run_mode")) == "retry"
@@ -302,6 +311,10 @@ def _status_text(job):
     if job.get("operation") == "replace":
         lines.append(f"FIND: {str(job.get('find', '')).replace(chr(96), chr(180))}")
         lines.append(f"REPLACE: {str(job.get('replace', '')).replace(chr(96), chr(180))}")
+    elif job.get("operation") == "thumbnail":
+        lines.append("THUMBNAIL: Bulk thumbnail replacement")
+        lines.append("Media: music/audio, files/documents, videos and animations")
+        lines.append("Note: Telegram requires media re-upload to attach a new thumbnail.")
     else:
         lines.append(
             f"SET CAPTION: {str(job.get('set_caption', '')).replace(chr(96), chr(180))}"
@@ -929,6 +942,7 @@ def _make_job(session, dry_run=False):
         "find": session.get("find", ""),
         "replace": session.get("replace", ""),
         "set_caption": session.get("set_caption", ""),
+        "thumbnail_file_id": session.get("thumbnail_file_id", ""),
         "done_ids": [],
         "changed": 0,
         "skipped": 0,
@@ -970,12 +984,115 @@ def _fatal_exception(exc):
     }
 
 
-async def _edit_one(job, message):
+async def _edit_one(job, message, runtime=None):
     if getattr(message, "media", None) is None:
         return "skipped"
 
     old = getattr(message, "caption", None) or ""
     operation = job.get("operation")
+
+    if operation == "thumbnail":
+        thumb_path = (runtime or {}).get("thumbnail_path")
+        if not thumb_path or not os.path.isfile(thumb_path):
+            raise RuntimeError("Thumbnail source is unavailable. Start the thumbnail job again.")
+
+        media = getattr(message, "media", None)
+        if media == enums.MessageMediaType.PHOTO:
+            return "skipped"
+        if getattr(message, "media_group_id", None) and media not in {
+            enums.MessageMediaType.VIDEO,
+            enums.MessageMediaType.ANIMATION,
+        }:
+            return "skipped"
+
+        media_file = getattr(message, media.value, None) if hasattr(media, "value") else None
+        if media_file is None:
+            return "skipped"
+
+        temp_dir = tempfile.mkdtemp(prefix="thumbnail-media-")
+        try:
+            name, _ = send_file._file_meta(message)
+            safe_name = os.path.basename(str(name or "").strip())
+            if not safe_name:
+                safe_name = f"media-{int(message.id)}.bin"
+            media_path = os.path.join(temp_dir, safe_name)
+
+            downloaded = await _flood(
+                lambda: Bot.download_media(message, file_name=media_path),
+                f"download media {job['chat_id']}/{message.id}",
+            )
+            if not downloaded or not os.path.isfile(downloaded):
+                raise RuntimeError("Telegram media could not be downloaded for thumbnail replacement.")
+
+            entities = list(getattr(message, "caption_entities", None) or [])
+
+            if media == enums.MessageMediaType.AUDIO:
+                media_object = InputMediaAudio(
+                    media=downloaded,
+                    thumb=thumb_path,
+                    caption=old,
+                    caption_entities=entities,
+                    duration=getattr(media_file, "duration", None),
+                    performer=getattr(media_file, "performer", None),
+                    title=getattr(media_file, "title", None),
+                )
+            elif media == enums.MessageMediaType.DOCUMENT:
+                media_object = InputMediaDocument(
+                    media=downloaded,
+                    thumb=thumb_path,
+                    caption=old,
+                    caption_entities=entities,
+                )
+            elif media == enums.MessageMediaType.VIDEO:
+                media_object = InputMediaVideo(
+                    media=downloaded,
+                    thumb=thumb_path,
+                    caption=old,
+                    caption_entities=entities,
+                    duration=getattr(media_file, "duration", None),
+                    width=getattr(media_file, "width", None),
+                    height=getattr(media_file, "height", None),
+                    supports_streaming=getattr(media_file, "supports_streaming", None),
+                    has_spoiler=bool(getattr(message, "has_media_spoiler", False)),
+                )
+            elif media == enums.MessageMediaType.ANIMATION:
+                media_object = InputMediaAnimation(
+                    media=downloaded,
+                    thumb=thumb_path,
+                    caption=old,
+                    caption_entities=entities,
+                    duration=getattr(media_file, "duration", None),
+                    width=getattr(media_file, "width", None),
+                    height=getattr(media_file, "height", None),
+                    has_spoiler=bool(getattr(message, "has_media_spoiler", False)),
+                )
+            else:
+                return "skipped"
+
+            if job.get("dry_run"):
+                return "changed"
+
+            await _flood(
+                lambda: Bot.edit_message_media(
+                    chat_id=int(job["chat_id"]),
+                    message_id=int(message.id),
+                    media=media_object,
+                    file_name=safe_name,
+                ),
+                f"thumbnail edit {job['chat_id']}/{message.id}",
+            )
+            return "changed"
+        finally:
+            try:
+                for root, _, files in os.walk(temp_dir, topdown=False):
+                    for item in files:
+                        try:
+                            os.remove(os.path.join(root, item))
+                        except OSError:
+                            pass
+                os.rmdir(temp_dir)
+            except OSError:
+                pass
 
     if operation == "replace":
         find_text = str(job.get("find", ""))
@@ -1028,13 +1145,10 @@ async def _edit_one(job, message):
         )
     except Exception as exc:
         if _is_message_not_modified(exc):
-            # Telegram explicitly reports a no-op edit as 400. Treat it as
-            # skipped rather than a failed message/job.
             return "skipped"
         raise
 
     return "changed"
-
 
 async def _process_batch(job, batch_ids, runtime, status_message):
     try:
@@ -1089,7 +1203,7 @@ async def _process_batch(job, batch_ids, runtime, status_message):
                 if message is None:
                     result = "skipped"
                 else:
-                    result = await _edit_one(job, message)
+                    result = await _edit_one(job, message, runtime)
 
                 completed = True
                 if result == "changed":
@@ -1188,7 +1302,28 @@ async def _run_job(job, status_message):
     runtime["pause"].set()
     _RUNTIME = runtime
 
+    thumbnail_dir = None
     try:
+        if job.get("operation") == "thumbnail":
+            thumbnail_dir = tempfile.mkdtemp(prefix="thumbnail-source-")
+            thumbnail_path = os.path.join(thumbnail_dir, "thumbnail.jpg")
+            downloaded = await _flood(
+                lambda: Bot.download_media(
+                    job["thumbnail_file_id"],
+                    file_name=thumbnail_path,
+                ),
+                "download thumbnail source",
+            )
+            if not downloaded or not os.path.isfile(downloaded):
+                raise RuntimeError("Thumbnail source could not be downloaded.")
+            size = os.path.getsize(downloaded)
+            if size <= 0 or size > 200 * 1024:
+                raise ValueError("Thumbnail must be JPEG and smaller than 200 KB.")
+            with open(downloaded, "rb") as thumb_file:
+                if thumb_file.read(2) != b"\xff\xd8":
+                    raise ValueError("Thumbnail must be a JPEG image.")
+            runtime["thumbnail_path"] = downloaded
+
         all_ids = _range_ids(job)
         done = {int(item) for item in job.get("done_ids") or []}
 
@@ -1255,6 +1390,17 @@ async def _run_job(job, status_message):
         await _send_report(
             status_message, job, "failed_ids", "FAILED MSG LINKS"
         )
+        if thumbnail_dir:
+            try:
+                for root, _, files in os.walk(thumbnail_dir, topdown=False):
+                    for item in files:
+                        try:
+                            os.remove(os.path.join(root, item))
+                        except OSError:
+                            pass
+                os.rmdir(thumbnail_dir)
+            except OSError:
+                pass
         _RUNTIME = None
 
 
@@ -1284,11 +1430,11 @@ def _session_start(user_id, operation):
 
 
 def _review(session, storage_warning=False):
-    operation = (
-        "Caption Replace"
-        if session["operation"] == "replace"
-        else "Set Caption"
-    )
+    operation = {
+        "replace": "Caption Replace",
+        "set": "Set Caption",
+        "thumbnail": "Set Thumbnail",
+    }.get(session["operation"], "Caption Maintenance")
     lines = [
         f"**{operation} — Confirm**",
         "",
@@ -1306,6 +1452,12 @@ def _review(session, storage_warning=False):
             "",
             "Only captions containing the exact FIND text will change.",
             "Everything else in those captions remains untouched.",
+        ])
+    elif session["operation"] == "thumbnail":
+        lines.extend([
+            "THUMBNAIL: One selected JPEG applied to the selected media range.",
+            "Targets: music/audio, files/documents, videos and animations.",
+            "The original message ID and caption are preserved; Telegram requires the media to be re-uploaded to attach a new thumbnail.",
         ])
     else:
         lines.extend([
@@ -1485,6 +1637,14 @@ async def set_caption_command(_, message):
     await _start_new(message, "set")
     raise StopPropagation
 
+@Bot.on_message(filters.private & filters.command("set_thumbnail"), group=-3)
+async def set_thumbnail_command(_, message):
+    if not _owner(message.from_user.id):
+        await message.reply_text("Owner/Admin Only")
+        raise StopPropagation
+    await _start_new(message, "thumbnail")
+    raise StopPropagation
+
 
 
 
@@ -1528,6 +1688,64 @@ async def caption_maintenance_forwarded(_, message):
             "Make sure the bot is an administrator and can edit channel messages."
         )
     raise StopPropagation
+@Bot.on_message(filters.private & filters.photo, group=-3)
+async def caption_maintenance_thumbnail(_, message):
+    user_id = int(message.from_user.id)
+    session = _SESSIONS.get(user_id)
+    if not session or session.get("step") != "thumbnail":
+        return
+
+    if not _owner(user_id):
+        _SESSIONS.pop(user_id, None)
+        await message.reply_text("Owner/Admin Only")
+        raise StopPropagation
+
+    try:
+        photo = getattr(message, "photo", None)
+        thumbs = list(getattr(photo, "thumbs", None) or []) if photo else []
+        candidates = [
+            item for item in thumbs
+            if int(getattr(item, "width", 0) or 0) <= 320
+            and int(getattr(item, "height", 0) or 0) <= 320
+            and int(getattr(item, "file_size", 0) or 0) <= 200 * 1024
+            and getattr(item, "file_id", None)
+        ]
+        if not candidates:
+            raise ValueError("No usable Telegram thumbnail size was found. Send a JPEG/photo that Telegram can provide at 320x320 or smaller and under 200 KB.")
+
+        selected = max(
+            candidates,
+            key=lambda item: (
+                int(getattr(item, "width", 0) or 0) * int(getattr(item, "height", 0) or 0),
+                int(getattr(item, "file_size", 0) or 0),
+            ),
+        )
+        session.update(
+            step="review",
+            thumbnail_file_id=str(selected.file_id),
+            thumbnail_width=int(getattr(selected, "width", 0) or 0),
+            thumbnail_height=int(getattr(selected, "height", 0) or 0),
+            thumbnail_size=int(getattr(selected, "file_size", 0) or 0),
+        )
+        storage_selected = await _storage_selected(session["chat_id"])
+        await message.reply_text(
+            _review(session, storage_warning=storage_selected),
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("Start", callback_data="cap:start"),
+                    InlineKeyboardButton("Dry Run", callback_data="cap:dry"),
+                ],
+                [InlineKeyboardButton("Cancel", callback_data="cap:cancel")],
+            ]),
+        )
+    except StopPropagation:
+        raise
+    except Exception as exc:
+        await message.reply_text(f"Error: {exc}")
+
+    raise StopPropagation
+
+
 @Bot.on_message(
     filters.private & filters.text & ~filters.command(bot_legacy.FILESTORE_COMMANDS),
     group=-3,
@@ -1601,7 +1819,7 @@ async def caption_maintenance_input(_, message):
             session["step"] = (
                 "find"
                 if session["operation"] == "replace"
-                else "caption"
+                else ("thumbnail" if session["operation"] == "thumbnail" else "caption")
             )
             if session["operation"] == "replace":
                 await message.reply_text(
@@ -1668,6 +1886,9 @@ async def caption_maintenance_input(_, message):
                     [InlineKeyboardButton("Cancel", callback_data="cap:cancel")],
                 ]),
             )
+
+        elif step == "thumbnail":
+            raise ValueError("Send the thumbnail as a photo image, not as text.")
 
         elif step == "caption":
             if not value or _caption_units(value) > 1024:
@@ -1942,7 +2163,7 @@ async def caption_maintenance_callback(_, query):
                 raise ValueError("Stop the current job first.")
             _SESSIONS.pop(user_id, None)
             await query.message.reply_text(
-                "Use /caption_replace or /set_caption to start a new maintenance job."
+                "Use /caption_replace, /set_caption or /set_thumbnail to start a new maintenance job."
             )
             raise StopPropagation
 
