@@ -877,11 +877,15 @@ async def _show_saved(message):
 
 async def _start_new(message, operation):
     job = await _normalize_saved_job(await _get_job())
-    if job and str(job.get("status", "")).lower() in {
-        "running", "paused", "stopped", "failed", "completed"
-    }:
+    state = str(job.get("status", "")).lower() if job else ""
+    if job and state in {"running", "paused", "stopping"}:
         await _show_saved(message)
         return
+
+    # An explicit /caption_replace or /set_caption starts a fresh job after
+    # an older job has stopped/failed/completed.
+    if job and state in {"stopped", "failed", "completed"}:
+        await db._set_setting("caption_maintenance_job", "")
 
     _session_start(message.from_user.id, operation)
     status = await message.reply_text(
