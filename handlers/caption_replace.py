@@ -1007,7 +1007,7 @@ async def _edit_one(job, message):
         "chat_id": int(job["chat_id"]),
         "message_id": int(message.id),
         "caption": new,
-        "parse_mode": parse_mode if operation == "set" else None,
+        "parse_mode": enums.ParseMode.HTML if operation == "set" and parse_mode == "html" else None,
     }
 
     if operation == "replace":
