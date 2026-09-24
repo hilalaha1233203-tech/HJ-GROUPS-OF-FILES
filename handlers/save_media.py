@@ -136,7 +136,13 @@ async def save_batch_media_in_channel(
                 raise RuntimeError(
                     f"Storage batch index message failed. Pyrogram: {pyrogram_send_error}"
                 )
-        payload = f"{channel_id}|{save_message.id}"
+        if hasattr(save_message, "id"):
+            save_message_id = int(save_message.id)
+        else:
+            save_message_id = int((save_message or {}).get("message_id") or 0)
+        if not save_message_id:
+            raise RuntimeError("Storage batch index message ID could not be determined.")
+        payload = f"{channel_id}|{save_message_id}"
         share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=HJGroups_{str_to_b64(payload)}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
