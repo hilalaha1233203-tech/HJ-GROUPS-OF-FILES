@@ -22,6 +22,11 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import bot_legacy
 from configs import Config
 from handlers.database import db
+from handlers.telegram_api import (
+    get_chat as api_get_chat,
+    get_chat_member as api_get_chat_member,
+    get_me as api_get_me,
+)
 
 Bot = bot_legacy.Bot
 _SESSIONS = {}
@@ -454,62 +459,86 @@ async def _discover_admin_channels():
             },
         )
 
+    try:
+        me = await _flood(api_get_me, "get bot identity")
+        bot_id = int((me or {}).get("id") or 0)
+        if bot_id <= 0:
+            raise ValueError("Telegram Bot API did not return the bot user ID.")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot verify admin channels through Telegram Bot API: {exc}"
+        ) from exc
+
     channels = []
     refreshed = []
 
     for item in by_id.values():
         chat_id = int(item["id"])
         username = str(item.get("username") or "").lstrip("@")
-        ref = f"@{username}" if username else chat_id
+        ref = "@" + username if username else chat_id
 
         try:
-            chat = await _flood(
-                lambda target=ref: Bot.get_chat(target),
-                f"channel lookup {ref}",
+            chat_data = await _flood(
+                lambda target=ref: api_get_chat(target),
+                f"channel metadata {ref}",
             )
         except Exception as exc:
             print(
-                f"[CAPTION_MAINTENANCE] Channel {chat_id} not resolvable yet: {exc}"
+                f"[CAPTION_MAINTENANCE] Channel {chat_id} could not be "
+                f"resolved by Bot API: {exc}"
             )
             continue
 
-        if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        chat_type = str((chat_data or {}).get("type") or "")
+        if chat_type != "channel":
             continue
 
+        canonical_id = int((chat_data or {}).get("id") or chat_id)
         try:
             member = await _flood(
-                lambda cid=int(chat.id): Bot.get_chat_member(cid, "me"),
-                f"admin check {chat.id}",
+                lambda cid=canonical_id: api_get_chat_member(cid, bot_id),
+                f"admin check {canonical_id}",
             )
         except Exception as exc:
             print(
                 f"[CAPTION_MAINTENANCE] Cannot inspect admin rights for "
-                f"{chat.id}: {exc}"
+                f"{canonical_id} via Bot API: {exc}"
             )
             continue
 
-        status = str(getattr(member, "status", "")).lower()
-        is_creator = "creator" in status or "owner" in status
-        is_admin = is_creator or "administrator" in status
+        status = str((member or {}).get("status") or "").lower()
+        is_creator = status in {"creator", "owner"}
+        is_admin = is_creator or status == "administrator"
         if not is_admin:
             continue
 
-        privileges = getattr(member, "privileges", None)
-        if not is_creator and privileges is not None:
-            if hasattr(privileges, "can_edit_messages") and not privileges.can_edit_messages:
+        if not is_creator and status == "administrator":
+            can_edit = (member or {}).get("can_edit_messages")
+            if can_edit is False:
                 continue
 
-        item = {
-            "id": int(chat.id),
-            "title": getattr(chat, "title", "") or item.get("title") or "Telegram Channel",
-            "username": getattr(chat, "username", "") or username,
-            "is_storage": int(chat.id) in storage_ids,
+        title = str(
+            (chat_data or {}).get("title")
+            or item.get("title")
+            or "Telegram Channel"
+        )
+        current_username = str(
+            (chat_data or {}).get("username")
+            or username
+            or ""
+        ).lstrip("@")
+
+        channel_item = {
+            "id": canonical_id,
+            "title": title,
+            "username": current_username,
+            "is_storage": canonical_id in storage_ids,
         }
-        channels.append(item)
+        channels.append(channel_item)
         refreshed.append({
-            "id": int(chat.id),
-            "title": item["title"],
-            "username": item["username"],
+            "id": canonical_id,
+            "title": title,
+            "username": current_username,
         })
 
     old_by_id = {int(item["id"]): item for item in known}
