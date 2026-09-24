@@ -28,13 +28,27 @@ _RUNTIME = None
 _JOB_TASK = None
 _PERSIST_LOCK = asyncio.Lock()
 
-WORKERS = max(2, min(3, int(os.environ.get("CAPTION_REPLACE_WORKERS", "2") or 2)))
-FETCH_BATCH = max(1, min(200, int(os.environ.get("CAPTION_REPLACE_FETCH_BATCH", "100") or 100)))
-CHECKPOINT_EVERY = max(1, min(1000, int(os.environ.get("CAPTION_REPLACE_CHECKPOINT_EVERY", "10") or 10)))
-try:
-    EDIT_DELAY = max(0.0, float(os.environ.get("CAPTION_REPLACE_EDIT_DELAY", "0.15") or 0.15))
-except (TypeError, ValueError):
-    EDIT_DELAY = 0.15
+
+def _env_int(name, default, low, high):
+    try:
+        value = int(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(high, value))
+
+
+def _env_float(name, default):
+    try:
+        value = float(os.environ.get(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(0.0, value)
+
+
+WORKERS = _env_int("CAPTION_REPLACE_WORKERS", 2, 2, 3)
+FETCH_BATCH = _env_int("CAPTION_REPLACE_FETCH_BATCH", 100, 1, 200)
+CHECKPOINT_EVERY = _env_int("CAPTION_REPLACE_CHECKPOINT_EVERY", 10, 1, 1000)
+EDIT_DELAY = _env_float("CAPTION_REPLACE_EDIT_DELAY", 0.15)
 
 _CHANNELS_PER_PAGE = 8
 _MAX_RANGE = 200000
