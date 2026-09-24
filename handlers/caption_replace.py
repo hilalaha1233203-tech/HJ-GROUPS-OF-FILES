@@ -69,6 +69,7 @@ _CHANNELS_PER_PAGE = 8
 _MAX_RANGE = 200000
 _STATUS_EVERY = 25
 _CHANNEL_REGISTRY_KEY = "caption_admin_channels"
+_CHANNEL_REMOVED_KEY = "caption_admin_removed_channels"
 _MAX_KNOWN_CHANNELS = 500
 _RUNTIME_CHANNEL_SEEN = set()
 
@@ -357,6 +358,41 @@ def _keyboard(job, active=False):
     return InlineKeyboardMarkup(rows)
 
 
+async def _get_removed_channel_ids():
+    raw = await db._get_setting(_CHANNEL_REMOVED_KEY, "[]")
+    try:
+        value = json.loads(raw) if raw else []
+    except Exception:
+        return set()
+    if not isinstance(value, list):
+        return set()
+    result = set()
+    for item in value:
+        try:
+            result.add(int(item))
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+async def _mark_channel_removed(chat_id):
+    removed = await _get_removed_channel_ids()
+    removed.add(int(chat_id))
+    await db._set_setting(
+        _CHANNEL_REMOVED_KEY,
+        json.dumps(sorted(removed), separators=(",", ":")),
+    )
+
+
+async def _unmark_channel_removed(chat_id):
+    removed = await _get_removed_channel_ids()
+    removed.discard(int(chat_id))
+    await db._set_setting(
+        _CHANNEL_REMOVED_KEY,
+        json.dumps(sorted(removed), separators=(",", ":")),
+    )
+
+
 def _channel_label(item):
     title = " ".join(str(item.get("title") or "Telegram Channel").split())
     if len(title) > 30:
@@ -408,6 +444,10 @@ async def _remember_channel(chat):
     try:
         chat_id = int(chat.id)
     except (TypeError, ValueError):
+        return
+
+    if chat_id in await _get_removed_channel_ids():
+        print(f"[CAPTION_MAINTENANCE] channel {chat_id} is explicitly removed; ignoring automatic re-registration.")
         return
 
     current = await _get_known_channels()
@@ -567,7 +607,9 @@ async def _discover_admin_channels():
         print(f"[CAPTION_MAINTENANCE] Storage list read failed: {exc}")
         storage_ids = set()
 
-    known = await _get_known_channels()
+    removed_ids = await _get_removed_channel_ids()
+    storage_ids -= removed_ids
+    known = [item for item in await _get_known_channels() if int(item["id"]) not in removed_ids]
     by_id = {int(item["id"]): item for item in known}
 
     for chat_id in storage_ids:
@@ -999,7 +1041,13 @@ async def _edit_one(job, message, runtime=None):
         media = getattr(message, "media", None)
         if media == enums.MessageMediaType.PHOTO:
             return "skipped"
-        if getattr(message, "media_group_id", None) and media != enums.MessageMediaType.VIDEO:
+        # Same-type audio/document/video edits are valid for their matching
+        # Telegram album types. Animation/photo album items are skipped.
+        if getattr(message, "media_group_id", None) and media not in {
+            enums.MessageMediaType.AUDIO,
+            enums.MessageMediaType.DOCUMENT,
+            enums.MessageMediaType.VIDEO,
+        }:
             return "skipped"
 
         media_file = getattr(message, media.value, None) if hasattr(media, "value") else None
@@ -1500,7 +1548,7 @@ async def _show_saved(message):
     job = await _normalize_saved_job(await _get_job())
     if not job:
         await message.reply_text(
-            "No saved caption maintenance job. Use /caption_replace or /set_caption."
+            "No saved caption maintenance job. Use /caption_replace, /set_caption or /set_thumbnail."
         )
         return
 
@@ -1669,6 +1717,7 @@ async def caption_maintenance_forwarded(_, message):
 
     try:
         await _resolve_target(int(chat.id))
+        await _unmark_channel_removed(int(chat.id))
         await _remember_channel(chat)
         channels = await _discover_admin_channels()
         session["channels"] = channels
@@ -1784,6 +1833,7 @@ async def caption_maintenance_input(_, message):
                 raise ValueError("That target is not a Telegram channel.")
 
             await _resolve_target(int(chat.id))
+            await _unmark_channel_removed(int(chat.id))
             await _remember_channel(chat)
 
             channels = await _discover_admin_channels()
@@ -1823,6 +1873,10 @@ async def caption_maintenance_input(_, message):
                     "Send the exact FIND text.\n"
                     "Matching is literal, case-sensitive, and keeps spaces/newlines."
                 )
+            elif session["operation"] == "thumbnail":
+                await message.reply_text(
+                    "Now send ONE thumbnail as a photo image. Telegram requires JPEG, <=320x320 and <200 KB."
+                )
             else:
                 await message.reply_text(
                     "Send the caption template to set.\n\n"
@@ -1855,11 +1909,18 @@ async def caption_maintenance_input(_, message):
                     f"One maintenance range cannot exceed {_MAX_RANGE} messages."
                 )
 
-            session["step"] = "caption"
-            await message.reply_text(
-                f"Range selected: {session['start_id']} -> {session['end_id']}\n\n"
-                "Send the caption template to set. Use {file_name} and {file_size} for automatic per-file values."
-            )
+            if session["operation"] == "thumbnail":
+                session["step"] = "thumbnail"
+                await message.reply_text(
+                    f"Range selected: {session['start_id']} -> {session['end_id']}\n\n"
+                    "Now send ONE thumbnail as a photo image. Telegram requires JPEG, <=320x320 and <200 KB."
+                )
+            else:
+                session["step"] = "caption"
+                await message.reply_text(
+                    f"Range selected: {session['start_id']} -> {session['end_id']}\n\n"
+                    "Send the caption template to set. Use {file_name} and {file_size} for automatic per-file values."
+                )
 
         elif step == "find":
             if not value or _caption_units(value) > 1024:
@@ -2029,6 +2090,7 @@ async def caption_maintenance_callback(_, query):
                 )
                 raise StopPropagation
             remaining = [x for x in known if int(x["id"]) != channel_id]
+            await _mark_channel_removed(channel_id)
             await db._set_setting(
                 _CHANNEL_REGISTRY_KEY,
                 json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
