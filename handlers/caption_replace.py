@@ -937,13 +937,6 @@ async def _resolve_target(chat_id, username=None):
     return chat
 
 
-async def _latest_message_id(chat_id):
-    async for message in Bot.get_chat_history(int(chat_id), limit=1):
-        if message is not None and getattr(message, "id", None):
-            return int(message.id)
-    raise ValueError("Could not determine the latest message ID.")
-
-
 
 def _render_set_caption(template, message):
     """Render Set Caption placeholders separately for each media message."""
