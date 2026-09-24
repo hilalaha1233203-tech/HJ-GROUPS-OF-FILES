@@ -1893,6 +1893,11 @@ async def caption_maintenance_input(_, message):
             if raw.lower() == "all":
                 session["start_id"] = 1
                 session["end_id"] = await _latest_message_id(session["chat_id"])
+                if abs(session["end_id"] - session["start_id"]) + 1 > _MAX_RANGE:
+                    raise ValueError(
+                        f"ALL would cover more than {_MAX_RANGE} messages. "
+                        "Use a smaller START/STOP range."
+                    )
             else:
                 parts = raw.split()
                 if len(parts) != 2 or not all(
@@ -2114,6 +2119,7 @@ async def caption_maintenance_callback(_, query):
             if selected is None:
                 raise ValueError("That channel is already removed.")
             remaining = [x for x in known if int(x["id"]) != channel_id]
+            await _mark_channel_removed(channel_id)
             await db._set_setting(
                 _CHANNEL_REGISTRY_KEY,
                 json.dumps(remaining, ensure_ascii=False, separators=(",", ":")),
