@@ -1891,23 +1891,26 @@ async def caption_maintenance_input(_, message):
         elif step == "range":
             raw = value.strip()
             if raw.lower() == "all":
-                session["start_id"] = 1
-                session["end_id"] = await _latest_message_id(session["chat_id"])
-                if abs(session["end_id"] - session["start_id"]) + 1 > _MAX_RANGE:
-                    raise ValueError(
-                        f"ALL would cover more than {_MAX_RANGE} messages. "
-                        "Use a smaller START/STOP range."
-                    )
-            else:
-                parts = raw.split()
-                if len(parts) != 2 or not all(
-                    part.isdigit() and int(part) > 0 for part in parts
-                ):
-                    raise ValueError(
-                        "Send ALL or two positive message IDs such as 1 500."
-                    )
-                session["start_id"] = int(parts[0])
-                session["end_id"] = int(parts[1])
+                # Telegram's messages.getHistory is a user-only MTProto method.
+                # This bot runs with a bot token, so Pyrogram cannot discover the
+                # channel's latest historical message ID with get_chat_history().
+                # Reject ALL here with a clear actionable message instead of
+                # surfacing the low-level BOT_METHOD_INVALID RPC error.
+                raise ValueError(
+                    "ALL range is not available in bot-only mode because Telegram "
+                    "does not allow bots to read channel history. Send START and "
+                    "STOP message IDs instead, for example: 1 500."
+                )
+
+            parts = raw.split()
+            if len(parts) != 2 or not all(
+                part.isdigit() and int(part) > 0 for part in parts
+            ):
+                raise ValueError(
+                    "Send two positive message IDs, for example: 1 500."
+                )
+            session["start_id"] = int(parts[0])
+            session["end_id"] = int(parts[1])
 
             if abs(session["end_id"] - session["start_id"]) + 1 > _MAX_RANGE:
                 raise ValueError(
