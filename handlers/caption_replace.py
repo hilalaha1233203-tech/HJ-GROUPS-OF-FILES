@@ -161,6 +161,38 @@ def adjust_caption_entities(old_caption, new_caption, entities, find_text, repla
     return result
 
 
+def _is_message_not_modified(exc):
+    """Return True for Telegram's harmless no-op edit error.
+
+    Pyrogram may expose this as MessageNotModified, while some Telegram
+    transport/error paths surface only the RPC text. Both mean that the
+    requested edit already matches the current message and must not fail the
+    maintenance UI/job.
+    """
+    if exc.__class__.__name__ == "MessageNotModified":
+        return True
+    text = str(exc).upper()
+    return "MESSAGE_NOT_MODIFIED" in text or "MESSAGE IS NOT MODIFIED" in text
+
+
+async def _safe_edit_text(message, *args, **kwargs):
+    try:
+        return await message.edit_text(*args, **kwargs)
+    except Exception as exc:
+        if _is_message_not_modified(exc):
+            return None
+        raise
+
+
+async def _safe_edit_reply_markup(message, *args, **kwargs):
+    try:
+        return await message.edit_reply_markup(*args, **kwargs)
+    except Exception as exc:
+        if _is_message_not_modified(exc):
+            return None
+        raise
+
+
 async def _flood(operation, label):
     while True:
         try:
@@ -908,7 +940,9 @@ async def _edit_one(job, message):
             f"edit {job['chat_id']}/{message.id}",
         )
     except Exception as exc:
-        if exc.__class__.__name__ == "MessageNotModified":
+        if _is_message_not_modified(exc):
+            # Telegram explicitly reports a no-op edit as 400. Treat it as
+            # skipped rather than a failed message/job.
             return "skipped"
         raise
 
@@ -1626,7 +1660,7 @@ async def caption_maintenance_callback(_, query):
     try:
         if action == "cancel":
             _SESSIONS.pop(user_id, None)
-            await query.message.edit_text("Caption maintenance setup cancelled.")
+            await _safe_edit_text(query.message, "Caption maintenance setup cancelled.")
             raise StopPropagation
 
         if action == "add":
@@ -1635,7 +1669,7 @@ async def caption_maintenance_callback(_, query):
                 raise ValueError("Channel selector expired. Run the command again.")
 
             session["step"] = "add_channel"
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 "➕ Add / Check Channel\n\n"
                 "Send the target channel @username, t.me/username, or numeric channel ID.\n"
                 "For private channels, the safest method is to forward one message "
@@ -1651,7 +1685,7 @@ async def caption_maintenance_callback(_, query):
 
             channels = await _discover_admin_channels()
             session["channels"] = channels
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 f"{session['operation'].title().replace('_', ' ')} — Select Target Channel\n\n"
                 f"Found {len(channels)} editable channel(s).",
                 reply_markup=_channel_keyboard(channels, 0),
@@ -1667,7 +1701,7 @@ async def caption_maintenance_callback(_, query):
                 session.get("channels") or [],
                 int(parts[2]),
             )
-            await query.message.edit_reply_markup(markup)
+            await _safe_edit_reply_markup(query.message, markup)
             raise StopPropagation
 
         if action == "channel":
@@ -1729,7 +1763,7 @@ async def caption_maintenance_callback(_, query):
                     "Send ALL for the entire channel, or two IDs such as 1 500."
                 )
 
-            await query.message.edit_text(prompt)
+            await _safe_edit_text(query.message, prompt)
             raise StopPropagation
 
         if action == "new":
@@ -1758,7 +1792,7 @@ async def caption_maintenance_callback(_, query):
                 if str(exc) != "STORAGE_CONFIRM_REQUIRED":
                     raise
 
-                await query.message.edit_text(
+                await _safe_edit_text(query.message, 
                     _review(session, storage_warning=True),
                     reply_markup=InlineKeyboardMarkup([
                         [
@@ -1775,7 +1809,7 @@ async def caption_maintenance_callback(_, query):
                 )
                 raise StopPropagation
 
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 _status_text(job),
                 reply_markup=_keyboard(job, active=True),
             )
@@ -1795,7 +1829,7 @@ async def caption_maintenance_callback(_, query):
             _SESSIONS.pop(user_id, None)
             await _set_job(job)
 
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 _status_text(job),
                 reply_markup=_keyboard(job, active=True),
             )
@@ -1809,7 +1843,7 @@ async def caption_maintenance_callback(_, query):
         state = str(job.get("status", "")).lower()
 
         if action == "status":
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 _status_text(job),
                 reply_markup=_keyboard(
                     job,
@@ -1825,7 +1859,7 @@ async def caption_maintenance_callback(_, query):
             _RUNTIME["pause"].clear()
             job["status"] = "paused"
             await _set_job(job)
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 _status_text(job),
                 reply_markup=_keyboard(job, active=False),
             )
@@ -1837,7 +1871,7 @@ async def caption_maintenance_callback(_, query):
                     _RUNTIME["pause"].set()
                     job["status"] = "running"
                     await _set_job(job)
-                    await query.message.edit_text(
+                    await _safe_edit_text(query.message, 
                         _status_text(job),
                         reply_markup=_keyboard(job, active=True),
                     )
@@ -1852,7 +1886,7 @@ async def caption_maintenance_callback(_, query):
             job["status"] = "running"
             job["fatal_error"] = ""
             await _set_job(job)
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 _status_text(job),
                 reply_markup=_keyboard(job, active=True),
             )
@@ -1864,14 +1898,14 @@ async def caption_maintenance_callback(_, query):
                 _RUNTIME["stop"].set()
                 job["status"] = "stopping"
                 await _set_job(job)
-                await query.message.edit_text(
+                await _safe_edit_text(query.message, 
                     _status_text(job),
                     reply_markup=_keyboard(job, active=False),
                 )
             else:
                 job["status"] = "stopped"
                 await _set_job(job)
-                await query.message.edit_text(
+                await _safe_edit_text(query.message, 
                     _status_text(job),
                     reply_markup=_keyboard(job, active=False),
                 )
@@ -1902,7 +1936,7 @@ async def caption_maintenance_callback(_, query):
             })
             await _set_job(retry_job)
 
-            await query.message.edit_text(
+            await _safe_edit_text(query.message, 
                 _status_text(retry_job),
                 reply_markup=_keyboard(retry_job, active=True),
             )
