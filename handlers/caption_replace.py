@@ -2220,7 +2220,8 @@ async def caption_maintenance_callback(_, query):
                 prompt = (
                     "Selected channel: "
                     f"{session['target_title']} ({session['chat_id']})\n\n"
-                    "Send ALL for the entire channel, or two IDs such as 1 500."
+                    "Send two message IDs as START STOP, for example 1 500.\n"
+                    "Telegram bot accounts cannot read full channel history to auto-detect an ALL endpoint."
                 )
 
             await _safe_edit_text(query.message, prompt)
