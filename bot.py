@@ -1,6 +1,7 @@
 import bot_legacy
 import enhancements
 import direct_link_fix
+import handlers.caption_replace
 from pyrogram import filters
 from pyrogram.types import Message, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from configs import Config
@@ -66,7 +67,7 @@ async def universal(bot,m): await make_batch(bot,m,_latest(m.from_user.id))
 @Bot.on_message(filters.private & filters.command("clear_batch"),group=-1)
 async def clear(_,m): _clear(m.from_user.id); bot_legacy.MediaList[str(m.from_user.id)]=[]; await m.reply_text("✅ Cleared your batch selection successfully!")
 async def setup_bot_commands():
-    await Bot.set_bot_commands([BotCommand("start","Start / open file links"),BotCommand("genlink","Generate a single link"),BotCommand("batch","Generate a batch link"),BotCommand("custom_batch","Generate selected batch"),BotCommand("shortener","Shorten a link"),BotCommand("settings","Customize settings"),BotCommand("clear_batch","Clear batch"),BotCommand("special_link","Create a batch link"),BotCommand("universal_link","Create a batch link"),BotCommand("broadcast","Broadcast"),BotCommand("status","Status"),BotCommand("ban_user","Ban user"),BotCommand("unban_user","Unban user"),BotCommand("banned_users","Banned users"),BotCommand("direct","Owner direct link"),BotCommand("direct_batch","Owner direct batch")])
+    await Bot.set_bot_commands([BotCommand("start","Start / open file links"),BotCommand("genlink","Generate a single link"),BotCommand("batch","Generate a batch link"),BotCommand("custom_batch","Generate selected batch"),BotCommand("shortener","Shorten a link"),BotCommand("settings","Customize settings"),BotCommand("clear_batch","Clear batch"),BotCommand("special_link","Create a batch link"),BotCommand("universal_link","Create a batch link"),BotCommand("broadcast","Broadcast"),BotCommand("status","Status"),BotCommand("ban_user","Ban user"),BotCommand("unban_user","Unban user"),BotCommand("banned_users","Banned users"),BotCommand("direct","Owner direct link"),BotCommand("direct_batch","Owner direct batch"),BotCommand("caption_replace","Owner bulk caption replacement")])
 bot_legacy.setup_bot_commands=setup_bot_commands
 run_bot=bot_legacy.run_bot
 if __name__=="__main__": Bot.run(run_bot())
