@@ -10,7 +10,10 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 from handlers.helpers import str_to_b64
 from handlers.database import db
-from handlers.telegram_api import copy_message as api_copy_message
+from handlers.telegram_api import (
+    copy_message as api_copy_message,
+    send_message as api_send_message,
+)
 
 
 def generate_random_alphanumeric():
@@ -108,13 +111,38 @@ async def save_batch_media_in_channel(
             await editable.edit("No files were available to save in this batch.")
             return
 
-        save_message = await bot.send_message(
-            chat_id=channel_id,
-            text=message_ids_str.strip(),
-            disable_web_page_preview=True,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Delete Batch", callback_data="closeMessage")]])
-        )
-        payload = f"{channel_id}|{save_message.id}"
+        try:
+            save_message = await bot.send_message(
+                chat_id=channel_id,
+                text=message_ids_str.strip(),
+                disable_web_page_preview=True,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Delete Batch", callback_data="closeMessage")]])
+            )
+        except Exception as pyrogram_send_error:
+            # A fresh in-memory Pyrogram bot may not have the private storage
+            # channel peer cached yet. Bot API sendMessage accepts the ID directly.
+            api_save = await api_send_message(
+                chat_id=channel_id,
+                text=message_ids_str.strip(),
+                disable_web_page_preview=True,
+                reply_markup={
+                    "inline_keyboard": [[
+                        {"text": "Delete Batch", "callback_data": "closeMessage"}
+                    ]]
+                },
+            )
+            save_message = api_save
+            if not save_message:
+                raise RuntimeError(
+                    f"Storage batch index message failed. Pyrogram: {pyrogram_send_error}"
+                )
+        if hasattr(save_message, "id"):
+            save_message_id = int(save_message.id)
+        else:
+            save_message_id = int((save_message or {}).get("message_id") or 0)
+        if not save_message_id:
+            raise RuntimeError("Storage batch index message ID could not be determined.")
+        payload = f"{channel_id}|{save_message_id}"
         share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=HJGroups_{str_to_b64(payload)}"
         short_link = get_short(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]

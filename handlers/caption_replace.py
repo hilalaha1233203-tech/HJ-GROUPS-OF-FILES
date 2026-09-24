@@ -3,14 +3,15 @@
 Caption Replace performs exact FIND -> REPLACE inside media captions.
 Set Caption replaces the complete caption on selected media messages.
 
-Targets are discovered dynamically from channels where this bot is an administrator
-with message-edit permission. The existing FileStore and storage architecture is
-not changed.
+Targets are maintained in a persistent bot-compatible channel registry and are
+revalidated for administrator/edit permission before use. The existing FileStore
+and storage architecture is not changed.
 """
 import asyncio
 import copy
 import json
 import os
+import re
 import tempfile
 import time
 
@@ -21,6 +22,11 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import bot_legacy
 from configs import Config
 from handlers.database import db
+from handlers.telegram_api import (
+    get_chat as api_get_chat,
+    get_chat_member as api_get_chat_member,
+    get_me as api_get_me,
+)
 
 Bot = bot_legacy.Bot
 _SESSIONS = {}
@@ -53,6 +59,9 @@ EDIT_DELAY = _env_float("CAPTION_REPLACE_EDIT_DELAY", 0.15)
 _CHANNELS_PER_PAGE = 8
 _MAX_RANGE = 200000
 _STATUS_EVERY = 25
+_CHANNEL_REGISTRY_KEY = "caption_admin_channels"
+_MAX_KNOWN_CHANNELS = 500
+_RUNTIME_CHANNEL_SEEN = set()
 
 
 def _owner(user_id):
@@ -310,6 +319,126 @@ def _channel_label(item):
     return f"{title}{username}{storage_mark}"[:62]
 
 
+async def _get_known_channels():
+    raw = await db._get_setting(_CHANNEL_REGISTRY_KEY, "[]")
+    try:
+        value = json.loads(raw) if raw else []
+    except Exception:
+        return []
+
+    if not isinstance(value, list):
+        return []
+
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            chat_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if chat_id in seen:
+            continue
+        seen.add(chat_id)
+        result.append({
+            "id": chat_id,
+            "title": str(item.get("title") or "Telegram Channel"),
+            "username": str(item.get("username") or "").lstrip("@"),
+        })
+    return result
+
+
+async def _remember_channel(chat):
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        return
+
+    try:
+        chat_id = int(chat.id)
+    except (TypeError, ValueError):
+        return
+
+    current = await _get_known_channels()
+    item = {
+        "id": chat_id,
+        "title": str(getattr(chat, "title", "") or "Telegram Channel"),
+        "username": str(getattr(chat, "username", "") or "").lstrip("@"),
+    }
+
+    updated = []
+    replaced = False
+    for existing in current:
+        if int(existing["id"]) == chat_id:
+            updated.append(item)
+            replaced = True
+        else:
+            updated.append(existing)
+
+    if not replaced:
+        updated.insert(0, item)
+
+    updated = updated[:_MAX_KNOWN_CHANNELS]
+    try:
+        await db._set_setting(
+            _CHANNEL_REGISTRY_KEY,
+            json.dumps(updated, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception as exc:
+        print(f"[CAPTION_MAINTENANCE] channel registry save failed: {exc}")
+
+
+def _forward_source(message):
+    origin = getattr(message, "forward_origin", None)
+    chat = getattr(origin, "chat", None) if origin else None
+    message_id = getattr(origin, "message_id", None) if origin else None
+    if chat is not None and message_id:
+        return chat
+
+    legacy_chat = getattr(message, "forward_from_chat", None)
+    if legacy_chat is not None:
+        return legacy_chat
+    return None
+
+
+def _channel_input_ref(value):
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(
+            "Send a channel @username, t.me link, numeric channel ID, "
+            "or forward one channel message."
+        )
+
+    lowered = raw.lower()
+    if (
+        lowered.startswith("https://t.me/")
+        or lowered.startswith("http://t.me/")
+        or lowered.startswith("https://telegram.me/")
+        or lowered.startswith("http://telegram.me/")
+    ):
+        tail = raw.split("/", 3)[-1]
+        username = tail.split("/", 1)[0]
+        if username and username.lower() not in {"c", "joinchat", "+", "s"}:
+            return "@" + username.lstrip("@")
+        raise ValueError(
+            "Private invite links cannot be resolved automatically. "
+            "Forward one message from that channel instead."
+        )
+
+    if raw.startswith("@"):
+        return raw.split()[0]
+
+    if re.fullmatch(r"-?\d+", raw):
+        return int(raw.split()[0])
+
+    if re.fullmatch(r"[A-Za-z0-9_]{5,}", raw):
+        return "@" + raw
+
+    raise ValueError(
+        "Invalid channel reference. Send @username, t.me/username, numeric "
+        "channel ID, or forward a channel message."
+    )
+
+
 async def _discover_admin_channels():
     try:
         storage_ids = {int(x) for x in await db.get_storage_channels()}
@@ -317,45 +446,115 @@ async def _discover_admin_channels():
         print(f"[CAPTION_MAINTENANCE] Storage list read failed: {exc}")
         storage_ids = set()
 
+    known = await _get_known_channels()
+    by_id = {int(item["id"]): item for item in known}
+
+    for chat_id in storage_ids:
+        by_id.setdefault(
+            chat_id,
+            {
+                "id": chat_id,
+                "title": "HJ Storage Channel",
+                "username": "",
+            },
+        )
+
+    try:
+        me = await _flood(api_get_me, "get bot identity")
+        bot_id = int((me or {}).get("id") or 0)
+        if bot_id <= 0:
+            raise ValueError("Telegram Bot API did not return the bot user ID.")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot verify admin channels through Telegram Bot API: {exc}"
+        ) from exc
+
     channels = []
-    seen = set()
+    refreshed = []
 
-    async for dialog in Bot.get_dialogs():
-        chat = getattr(dialog, "chat", None)
-        if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
-            continue
-
-        chat_id = int(chat.id)
-        if chat_id in seen:
-            continue
-        seen.add(chat_id)
+    for item in by_id.values():
+        chat_id = int(item["id"])
+        username = str(item.get("username") or "").lstrip("@")
+        ref = "@" + username if username else chat_id
 
         try:
-            member = await _flood(
-                lambda cid=chat_id: Bot.get_chat_member(cid, "me"),
-                f"admin check {chat_id}",
+            chat_data = await _flood(
+                lambda target=ref: api_get_chat(target),
+                f"channel metadata {ref}",
             )
         except Exception as exc:
-            print(f"[CAPTION_MAINTENANCE] Cannot inspect {chat_id}: {exc}")
+            print(
+                f"[CAPTION_MAINTENANCE] Channel {chat_id} could not be "
+                f"resolved by Bot API: {exc}"
+            )
             continue
 
-        status = str(getattr(member, "status", "")).lower()
-        is_creator = "creator" in status or "owner" in status
-        is_admin = is_creator or "administrator" in status
+        chat_type = str((chat_data or {}).get("type") or "")
+        if chat_type != "channel":
+            continue
+
+        canonical_id = int((chat_data or {}).get("id") or chat_id)
+        try:
+            member = await _flood(
+                lambda cid=canonical_id: api_get_chat_member(cid, bot_id),
+                f"admin check {canonical_id}",
+            )
+        except Exception as exc:
+            print(
+                f"[CAPTION_MAINTENANCE] Cannot inspect admin rights for "
+                f"{canonical_id} via Bot API: {exc}"
+            )
+            continue
+
+        status = str((member or {}).get("status") or "").lower()
+        is_creator = status in {"creator", "owner"}
+        is_admin = is_creator or status == "administrator"
         if not is_admin:
             continue
 
-        privileges = getattr(member, "privileges", None)
-        if not is_creator and privileges is not None:
-            if hasattr(privileges, "can_edit_messages") and not privileges.can_edit_messages:
+        if not is_creator and status == "administrator":
+            can_edit = (member or {}).get("can_edit_messages")
+            if can_edit is False:
                 continue
 
-        channels.append({
-            "id": chat_id,
-            "title": getattr(chat, "title", "") or "Telegram Channel",
-            "username": getattr(chat, "username", "") or "",
-            "is_storage": chat_id in storage_ids,
+        title = str(
+            (chat_data or {}).get("title")
+            or item.get("title")
+            or "Telegram Channel"
+        )
+        current_username = str(
+            (chat_data or {}).get("username")
+            or username
+            or ""
+        ).lstrip("@")
+
+        channel_item = {
+            "id": canonical_id,
+            "title": title,
+            "username": current_username,
+            "is_storage": canonical_id in storage_ids,
+        }
+        channels.append(channel_item)
+        refreshed.append({
+            "id": canonical_id,
+            "title": title,
+            "username": current_username,
         })
+
+    old_by_id = {int(item["id"]): item for item in known}
+    for item in refreshed:
+        old_by_id[int(item["id"])] = item
+    try:
+        await db._set_setting(
+            _CHANNEL_REGISTRY_KEY,
+            json.dumps(
+                list(old_by_id.values())[:_MAX_KNOWN_CHANNELS],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        )
+    except Exception as exc:
+        print(f"[CAPTION_MAINTENANCE] channel registry refresh save failed: {exc}")
 
     channels.sort(key=lambda item: (str(item["title"]).lower(), item["id"]))
     return channels
@@ -395,17 +594,45 @@ def _channel_keyboard(channels, page=0):
         rows.append(nav)
 
     rows.append([
-        InlineKeyboardButton("Refresh Channel List", callback_data="cap:refresh")
+        InlineKeyboardButton(
+            "➕ Add / Check Channel",
+            callback_data="cap:add",
+        )
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            "Refresh Channel List",
+            callback_data="cap:refresh",
+        )
     ])
     rows.append([InlineKeyboardButton("Cancel", callback_data="cap:cancel")])
     return InlineKeyboardMarkup(rows)
 
 
-async def _resolve_target(chat_id):
-    chat = await _flood(
-        lambda: Bot.get_chat(int(chat_id)),
-        f"target lookup {chat_id}",
-    )
+async def _resolve_target(chat_id, username=None):
+    username = str(username or "").strip().lstrip("@")
+    try:
+        chat = await _flood(
+            lambda: Bot.get_chat(int(chat_id)),
+            f"target lookup {chat_id}",
+        )
+    except Exception as first_error:
+        if not username:
+            raise ValueError(
+                "Telegram peer is not available in this bot session. "
+                "Forward one message from the channel to this bot, then select it again."
+            ) from first_error
+        try:
+            chat = await _flood(
+                lambda: Bot.get_chat("@" + username),
+                f"target lookup @{username}",
+            )
+        except Exception as second_error:
+            raise ValueError(
+                "Telegram could not resolve the selected channel. "
+                "For a private channel, forward one message from that channel."
+            ) from second_error
+
     if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
         raise ValueError("Selected target is not a Telegram channel.")
 
@@ -889,35 +1116,94 @@ async def _start_new(message, operation):
 
     _session_start(message.from_user.id, operation)
     status = await message.reply_text(
-        "Scanning Telegram channels where this bot is an administrator..."
+        "Loading known Telegram channels where this bot can edit messages..."
     )
 
     try:
         channels = await _discover_admin_channels()
     except Exception as exc:
-        await status.edit_text(f"Channel scan failed: {exc}")
-        _SESSIONS.pop(int(message.from_user.id), None)
-        return
-
-    if not channels:
         await status.edit_text(
-            "No editable Telegram channels found.\n\n"
-            "Make this bot an administrator in the target channel and grant "
-            "permission to edit channel messages."
+            f"Channel list refresh failed: {exc}\n\n"
+            "Use ➕ Add / Check Channel and send @username or forward one channel message."
         )
-        _SESSIONS.pop(int(message.from_user.id), None)
         return
 
     session = _SESSIONS[int(message.from_user.id)]
     session["channels"] = channels
 
+    if not channels:
+        text = (
+            f"{operation.title().replace('_', ' ')} — Select Target Channel\n\n"
+            "No previously-known editable channels are currently resolvable.\n\n"
+            "Use ➕ Add / Check Channel, then send the channel @username, "
+            "numeric ID, or forward one message from the target channel."
+        )
+    else:
+        text = (
+            f"{operation.title().replace('_', ' ')} — Select Target Channel\n\n"
+            f"Found {len(channels)} currently available editable channel(s).\n"
+            "Private channels that are not yet in the current Pyrogram peer cache "
+            "can be re-added by forwarding one message from that channel.\n"
+            "HJ storage is marked separately."
+        )
+
     await status.edit_text(
-        f"{operation.title().replace('_', ' ')} — Select Target Channel\n\n"
-        f"Found {len(channels)} editable channel(s).\n"
-        "HJ storage is marked separately.\n"
-        "Select the channel that should be modified.",
+        text,
         reply_markup=_channel_keyboard(channels, 0),
     )
+
+
+@Bot.on_message(filters.channel, group=-10)
+async def _observe_channel_message(_, message):
+    chat = getattr(message, "chat", None)
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        return
+    chat_id = int(chat.id)
+    seen = _RUNTIME_CHANNEL_SEEN
+    if chat_id in seen:
+        return
+    seen.add(chat_id)
+    try:
+        await _remember_channel(chat)
+    except Exception as exc:
+        print(
+            f"[CAPTION_MAINTENANCE] channel observation failed for "
+            f"{chat_id}: {exc}"
+        )
+
+
+@Bot.on_chat_member_updated(group=-10)
+async def _observe_channel_membership(_, update):
+    chat = getattr(update, "chat", None)
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        return
+
+    old_member = getattr(update, "old_chat_member", None)
+    new_member = getattr(update, "new_chat_member", None)
+    old_user = getattr(old_member, "user", None)
+    new_user = getattr(new_member, "user", None)
+    try:
+        me = await Bot.get_me()
+        bot_id = int(me.id)
+    except Exception:
+        return
+
+    if not (
+        (old_user is not None and int(old_user.id) == bot_id)
+        or (new_user is not None and int(new_user.id) == bot_id)
+    ):
+        return
+
+    status = str(getattr(new_member, "status", "")).lower()
+    is_admin = "administrator" in status or "creator" in status or "owner" in status
+    if is_admin:
+        try:
+            await _remember_channel(chat)
+        except Exception as exc:
+            print(
+                f"[CAPTION_MAINTENANCE] membership registration failed for "
+                f"{chat.id}: {exc}"
+            )
 
 
 @Bot.on_message(filters.private & filters.command("caption_replace"), group=-3)
@@ -938,6 +1224,48 @@ async def set_caption_command(_, message):
     raise StopPropagation
 
 
+
+
+@Bot.on_message(
+    filters.private & filters.forwarded,
+    group=-4,
+)
+async def caption_maintenance_forwarded(_, message):
+    user_id = int(message.from_user.id)
+    session = _SESSIONS.get(user_id)
+    if not session or session.get("step") != "add_channel":
+        return
+
+    if not _owner(user_id):
+        _SESSIONS.pop(user_id, None)
+        await message.reply_text("Owner/Admin Only")
+        raise StopPropagation
+
+    chat = _forward_source(message)
+    if chat is None or getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        await message.reply_text(
+            "❌ Please forward one message directly from the target Telegram channel."
+        )
+        raise StopPropagation
+
+    try:
+        await _resolve_target(int(chat.id))
+        await _remember_channel(chat)
+        channels = await _discover_admin_channels()
+        session["channels"] = channels
+        session["step"] = "channels"
+
+        await message.reply_text(
+            f"✅ Channel verified and added: {getattr(chat, 'title', '') or chat.id}\n"
+            "Select the target channel below.",
+            reply_markup=_channel_keyboard(channels, 0),
+        )
+    except Exception as exc:
+        await message.reply_text(
+            f"❌ Could not verify that channel: {exc}\n"
+            "Make sure the bot is an administrator and can edit channel messages."
+        )
+    raise StopPropagation
 @Bot.on_message(
     filters.private & filters.text & ~filters.command(bot_legacy.FILESTORE_COMMANDS),
     group=-3,
@@ -961,6 +1289,36 @@ async def caption_maintenance_input(_, message):
             raise StopPropagation
 
         step = session.get("step")
+
+        if step == "add_channel":
+            ref = _channel_input_ref(value)
+            try:
+                chat = await _flood(
+                    lambda target=ref: Bot.get_chat(target),
+                    f"add channel {ref}",
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Telegram could not resolve that channel: {exc}\n"
+                    "For a private channel, forward one message from the channel and try again."
+                )
+
+            if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+                raise ValueError("That target is not a Telegram channel.")
+
+            await _resolve_target(int(chat.id))
+            await _remember_channel(chat)
+
+            channels = await _discover_admin_channels()
+            session["channels"] = channels
+            session["step"] = "channels"
+
+            await message.reply_text(
+                f"✅ Channel added: {getattr(chat, 'title', '') or chat.id}\n"
+                "Select it from the channel list below.",
+                reply_markup=_channel_keyboard(channels, 0),
+            )
+            raise StopPropagation
 
         if step == "start":
             if not value.strip().isdigit() or int(value) <= 0:
@@ -1088,7 +1446,10 @@ async def _create_job_from_session(user_id, dry_run=False):
     if not session or session.get("step") != "review":
         raise ValueError("The setup session expired. Run the command again.")
 
-    await _resolve_target(int(session["chat_id"]))
+    await _resolve_target(
+        int(session["chat_id"]),
+        session.get("target_username"),
+    )
 
     if await _storage_selected(session["chat_id"]):
         raise RuntimeError("STORAGE_CONFIRM_REQUIRED")
@@ -1117,255 +1478,3 @@ async def caption_maintenance_callback(_, query):
     action = parts[1] if len(parts) > 1 else ""
 
     try:
-        if action == "cancel":
-            _SESSIONS.pop(user_id, None)
-            await query.message.edit_text("Caption maintenance setup cancelled.")
-            raise StopPropagation
-
-        if action == "refresh":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            channels = await _discover_admin_channels()
-            session["channels"] = channels
-            await query.message.edit_text(
-                f"{session['operation'].title().replace('_', ' ')} — Select Target Channel\n\n"
-                f"Found {len(channels)} editable channel(s).",
-                reply_markup=_channel_keyboard(channels, 0),
-            )
-            raise StopPropagation
-
-        if action == "page":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            markup = _channel_keyboard(
-                session.get("channels") or [],
-                int(parts[2]),
-            )
-            await query.message.edit_reply_markup(markup)
-            raise StopPropagation
-
-        if action == "channel":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "channels":
-                raise ValueError("Channel selector expired. Run the command again.")
-
-            index = int(parts[2])
-            channels = session.get("channels") or []
-            if index < 0 or index >= len(channels):
-                raise ValueError("Channel selection expired. Refresh the list.")
-
-            selected = channels[index]
-            chat = await _resolve_target(selected["id"])
-            session.update(
-                step="range",
-                chat_id=int(selected["id"]),
-                target_title=getattr(chat, "title", "") or selected["title"],
-                target_username=getattr(chat, "username", "") or selected["username"],
-            )
-
-            if session["operation"] == "replace":
-                session["step"] = "start"
-                prompt = (
-                    "Selected channel: "
-                    f"{session['target_title']} ({session['chat_id']})\n\n"
-                    "Send the START message ID."
-                )
-            else:
-                prompt = (
-                    "Selected channel: "
-                    f"{session['target_title']} ({session['chat_id']})\n\n"
-                    "Send ALL for the entire channel, or two IDs such as 1 500."
-                )
-
-            await query.message.edit_text(prompt)
-            raise StopPropagation
-
-        if action == "new":
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                raise ValueError("Stop the current job first.")
-            _SESSIONS.pop(user_id, None)
-            await query.message.reply_text(
-                "Use /caption_replace or /set_caption to start a new maintenance job."
-            )
-            raise StopPropagation
-
-        if action in {"start", "dry"}:
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "review":
-                raise ValueError("The setup session expired. Run the command again.")
-
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                raise ValueError("Another caption maintenance job is already running.")
-
-            try:
-                job = await _create_job_from_session(
-                    user_id,
-                    dry_run=(action == "dry"),
-                )
-            except RuntimeError as exc:
-                if str(exc) != "STORAGE_CONFIRM_REQUIRED":
-                    raise
-
-                await query.message.edit_text(
-                    _review(session, storage_warning=True),
-                    reply_markup=InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton(
-                                "Confirm Storage Edit",
-                                callback_data=f"cap:confirm:{action}",
-                            ),
-                            InlineKeyboardButton(
-                                "Cancel",
-                                callback_data="cap:cancel",
-                            ),
-                        ]
-                    ]),
-                )
-                raise StopPropagation
-
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=True),
-            )
-            _start_task(job, query.message)
-            raise StopPropagation
-
-        if action == "confirm":
-            session = _SESSIONS.get(user_id)
-            if not session or session.get("step") != "review":
-                raise ValueError("The setup session expired. Run the command again.")
-
-            await _resolve_target(int(session["chat_id"]))
-            job = _make_job(
-                session,
-                dry_run=(len(parts) > 2 and parts[2] == "dry"),
-            )
-            _SESSIONS.pop(user_id, None)
-            await _set_job(job)
-
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=True),
-            )
-            _start_task(job, query.message)
-            raise StopPropagation
-
-        job = _RUNTIME["job"] if _RUNTIME is not None else await _get_job()
-        if not job:
-            raise ValueError("No saved caption maintenance job found.")
-
-        state = str(job.get("status", "")).lower()
-
-        if action == "status":
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(
-                    job,
-                    active=_JOB_TASK is not None and not _JOB_TASK.done(),
-                ),
-            )
-            raise StopPropagation
-
-        if action == "pause":
-            if _RUNTIME is None or _JOB_TASK is None or _JOB_TASK.done():
-                raise ValueError("Worker is not active. Use Resume.")
-
-            _RUNTIME["pause"].clear()
-            job["status"] = "paused"
-            await _set_job(job)
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=False),
-            )
-            raise StopPropagation
-
-        if action == "resume":
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                if _RUNTIME is not None:
-                    _RUNTIME["pause"].set()
-                    job["status"] = "running"
-                    await _set_job(job)
-                    await query.message.edit_text(
-                        _status_text(job),
-                        reply_markup=_keyboard(job, active=True),
-                    )
-                raise StopPropagation
-
-            if state not in {"running", "paused", "stopped", "failed"}:
-                raise ValueError(
-                    "This job is completed. Use New Job or Retry Failed IDs."
-                )
-
-            await _resolve_target(int(job["chat_id"]))
-            job["status"] = "running"
-            job["fatal_error"] = ""
-            await _set_job(job)
-            await query.message.edit_text(
-                _status_text(job),
-                reply_markup=_keyboard(job, active=True),
-            )
-            _start_task(job, query.message)
-            raise StopPropagation
-
-        if action == "stop":
-            if _RUNTIME is not None and _JOB_TASK is not None and not _JOB_TASK.done():
-                _RUNTIME["stop"].set()
-                job["status"] = "stopping"
-                await _set_job(job)
-                await query.message.edit_text(
-                    _status_text(job),
-                    reply_markup=_keyboard(job, active=False),
-                )
-            else:
-                job["status"] = "stopped"
-                await _set_job(job)
-                await query.message.edit_text(
-                    _status_text(job),
-                    reply_markup=_keyboard(job, active=False),
-                )
-            raise StopPropagation
-
-        if action == "retry":
-            if _JOB_TASK is not None and not _JOB_TASK.done():
-                raise ValueError("Another caption maintenance job is already running.")
-
-            failed = [int(item) for item in job.get("failed_ids") or []]
-            if not failed:
-                raise ValueError("There are no failed message IDs to retry.")
-
-            await _resolve_target(int(job["chat_id"]))
-            retry_job = copy.deepcopy(job)
-            retry_job.update({
-                "status": "running",
-                "run_mode": "retry",
-                "retry_ids": failed,
-                "retry_total": len(failed),
-                "done_ids": [],
-                "skipped_ids": [],
-                "changed": 0,
-                "skipped": 0,
-                "last_error": "",
-                "fatal_error": "",
-                "failed_ids": [],
-            })
-            await _set_job(retry_job)
-
-            await query.message.edit_text(
-                _status_text(retry_job),
-                reply_markup=_keyboard(retry_job, active=True),
-            )
-            _start_task(retry_job, query.message)
-            raise StopPropagation
-
-        raise ValueError("Unknown maintenance action.")
-
-    except StopPropagation:
-        raise
-    except Exception as exc:
-        await query.answer(str(exc)[:190], show_alert=True)
-
-    raise StopPropagation

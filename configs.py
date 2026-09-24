@@ -93,7 +93,7 @@ Use **Commands** to view all available commands and features.
 ➜ `/clear_batch` — Clear your current batch selection.
 
 🛠️ **Owner Maintenance Commands**
-➜ `/caption_replace` — Select an admin channel and exact-replace text inside its media captions.
+➜ `/caption_replace` — Select an admin channel and exact-replace text inside its media captions. Private channels can be added by forwarding one message.
 ➜ `/set_caption` — Select an admin channel and set a caption across all or a message-ID range.
 
 🛡️ **Moderator Commands:**

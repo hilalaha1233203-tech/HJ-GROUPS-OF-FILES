@@ -17,7 +17,12 @@ from handlers.helpers import b64_to_str, str_to_b64
 from handlers.check_user_status import handle_user_status
 from handlers.broadcast_handlers import main_broadcast_handler
 from handlers.save_media import save_media_in_channel, save_batch_media_in_channel, get_short
-from handlers.telegram_api import copy_message as api_copy_message, delete_message as api_delete_message, send_message as api_send_message
+from handlers.telegram_api import (
+    copy_message as api_copy_message,
+    get_chat as api_get_chat,
+    delete_message as api_delete_message,
+    send_message as api_send_message,
+)
 
 MediaList = {}
 
@@ -103,7 +108,6 @@ async def resolve_existing_db_message(bot: Client, message: Message):
         if db_channel_id is None:
             if int(message.from_user.id) != int(Config.BOT_OWNER):
                 return None
-            await bot.get_chat(source_channel_id)
             await db.set_db_channel_id(source_channel_id)
             return int(forwarded_message_id)
         if source_channel_id == int(db_channel_id):
@@ -864,23 +868,37 @@ async def button(bot: Client, cmd: CallbackQuery):
 
 
 async def validate_db_channel_access():
-    """Resolve the persisted storage channel without making startup depend on a stale env value."""
+    """Validate the persisted storage channel through the Bot API.
+
+    Pyrogram can report PEER_ID_INVALID for a fresh in-memory bot session because
+    the channel peer/access hash is not cached yet. Bot API getChat accepts the
+    channel ID directly, so startup validation must not depend on that cache.
+    """
     try:
         channel_id = await db.get_db_channel_id()
         if channel_id is None:
             print("[DB_CHANNEL] No storage channel configured yet; waiting for owner recovery/link input.")
             return False
-        chat = await Bot.get_chat(int(channel_id))
+        chat = await api_get_chat(int(channel_id))
+        chat_type = str((chat or {}).get("type") or "")
+        if chat_type not in {"channel", "supergroup"}:
+            print(
+                f"[DB_CHANNEL] Stored chat {channel_id} is not a channel/supergroup "
+                f"(type={chat_type or 'unknown'})."
+            )
+            return False
         print(
-            f"[DB_CHANNEL] Connected: id={chat.id} title={getattr(chat, 'title', '')!r}"
+            f"[DB_CHANNEL] Connected via Bot API: id={chat.get('id')} "
+            f"title={chat.get('title', '')!r}"
         )
         return True
     except Exception as err:
-        print(f"[DB_CHANNEL] ERROR: Unable to access the stored Database Channel: {err}")
+        print(f"[DB_CHANNEL] ERROR: Unable to access the stored Database Channel via Bot API: {err}")
         return False
 
 
 async def recover_storage_channels():
+    """Validate configured storage IDs without requiring a Pyrogram peer cache."""
     try:
         stored = await db.get_storage_channels()
     except Exception as err:
@@ -889,16 +907,22 @@ async def recover_storage_channels():
     if Config.DB_CHANNEL:
         stored.append(int(Config.DB_CHANNEL))
     stored.append(-1004394820141)
-    seen=[]
+
+    seen = []
     for cid in stored:
+        cid = int(cid)
         if cid in seen:
             continue
         try:
-            chat = await Bot.get_chat(int(cid))
-            if chat.type in (enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP):
-                seen.append(int(chat.id))
+            chat = await api_get_chat(cid)
+            chat_type = str((chat or {}).get("type") or "")
+            if chat_type in {"channel", "supergroup"}:
+                canonical_id = int(chat.get("id") or cid)
+                if canonical_id not in seen:
+                    seen.append(canonical_id)
         except Exception as err:
-            print(f"Storage channel {cid} unavailable: {err}")
+            print(f"[DB_CHANNEL] Storage channel {cid} unavailable via Bot API: {err}")
+
     if seen:
         try:
             await db.set_storage_channels(seen)
