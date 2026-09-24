@@ -1036,7 +1036,7 @@ async def _process_batch(job, batch_ids, runtime, status_message):
                 if status_message and processed and processed % _STATUS_EVERY == 0:
                     try:
                         await _flood(
-                            lambda: status_message.edit_text(
+                            lambda: _safe_edit_text(status_message, 
                                 _status_text(job),
                                 reply_markup=_keyboard(job, active=True),
                             ),
@@ -1150,7 +1150,7 @@ async def _run_job(job, status_message):
 
         try:
             await _flood(
-                lambda: status_message.edit_text(
+                lambda: _safe_edit_text(status_message, 
                     _status_text(job),
                     reply_markup=_keyboard(job, active=False),
                 ),
@@ -1297,7 +1297,7 @@ async def _start_new(message, operation):
     try:
         channels = await _discover_admin_channels()
     except Exception as exc:
-        await status.edit_text(
+        await _safe_edit_text(status, 
             f"Channel list refresh failed: {exc}\n\n"
             "Use ➕ Add / Check Channel and send @username or forward one channel message."
         )
@@ -1322,7 +1322,7 @@ async def _start_new(message, operation):
             "HJ storage is marked separately."
         )
 
-    await status.edit_text(
+    await _safe_edit_text(status, 
         text,
         reply_markup=_channel_keyboard(channels, 0),
     )
