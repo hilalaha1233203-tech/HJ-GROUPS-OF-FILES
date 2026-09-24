@@ -612,63 +612,154 @@ def _channel_keyboard(channels, page=0):
 
 
 async def _resolve_target(chat_id, username=None):
-    """Resolve and validate a maintenance target.
+    """Resolve a saved channel using both Bot API and the current Pyrogram peer cache.
 
-    Prefer a username when one is known. This hydrates the current Pyrogram
-    bot peer for public channels that are already persisted in the registry,
-    while numeric IDs remain the fallback for private channels already cached.
+    Existing channels may have only a numeric ID in the persistent registry.  In that
+    case Pyrogram can reject the numeric peer even though the Bot API can resolve and
+    verify the channel.  Prefer the saved username when available, then numeric ID,
+    and finally use the Bot API metadata as the authoritative existence/permission
+    check before returning the Pyrogram chat object.
     """
-    chat_id = int(chat_id)
     username = str(username or "").strip().lstrip("@")
-
-    refs = []
+    candidates = []
     if username:
-        refs.append(("@" + username, f"target lookup @{username}"))
-    refs.append((chat_id, f"target lookup {chat_id}"))
+        candidates.append("@" + username)
+    try:
+        numeric_id = int(chat_id)
+    except (TypeError, ValueError):
+        numeric_id = None
+    if numeric_id is not None:
+        candidates.append(numeric_id)
 
-    last_error = None
     chat = None
-    for ref, label in refs:
+    last_error = None
+    for candidate in candidates:
         try:
             chat = await _flood(
-                lambda target=ref: Bot.get_chat(target),
-                label,
+                lambda target=candidate: Bot.get_chat(target),
+                f"target lookup {candidate}",
             )
             break
         except Exception as exc:
             last_error = exc
 
+    # The Bot API registry is deliberately the fallback for old/private entries
+    # that are valid but are not currently present in Pyrogram's peer cache.
+    api_chat = None
     if chat is None:
+        refs = []
         if username:
-            message = (
-                "Telegram could not resolve the selected channel. "
-                "Refresh the channel list and try again."
-            )
-        else:
-            message = (
-                "This private channel is not available in the current Telegram "
-                "bot session. Press ➕ Add / Check Channel and forward one message "
-                "from that channel to rebuild the channel peer, then select it again."
-            )
-        raise ValueError(message) from last_error
+            refs.append("@" + username)
+        if numeric_id is not None:
+            refs.append(numeric_id)
+        for ref in refs:
+            try:
+                api_chat = await _flood(
+                    lambda target=ref: api_get_chat(target),
+                    f"Bot API target lookup {ref}",
+                )
+                if str((api_chat or {}).get("type") or "") == "channel":
+                    break
+            except Exception as exc:
+                last_error = exc
+                api_chat = None
 
-    if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+    if chat is None and api_chat is None:
+        raise ValueError(
+            "Telegram could not resolve the selected channel. "
+            "Refresh the channel list or use Add / Check Channel to register it again."
+        ) from last_error
+
+    if chat is not None and getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+        raise ValueError("Selected target is not a Telegram channel.")
+    if api_chat is not None and str(api_chat.get("type") or "") != "channel":
         raise ValueError("Selected target is not a Telegram channel.")
 
-    member = await _flood(
-        lambda: Bot.get_chat_member(chat_id, "me"),
-        f"target permission check {chat_id}",
-    )
-    status = str(getattr(member, "status", "")).lower()
-    is_creator = "creator" in status or "owner" in status
-    if not (is_creator or "administrator" in status):
-        raise ValueError("The bot is no longer an administrator in this channel.")
+    canonical_id = numeric_id
+    if api_chat is not None:
+        try:
+            canonical_id = int(api_chat.get("id"))
+        except (TypeError, ValueError):
+            pass
 
-    privileges = getattr(member, "privileges", None)
-    if not is_creator and privileges is not None:
-        if hasattr(privileges, "can_edit_messages") and not privileges.can_edit_messages:
+    # Permission verification: first use the Bot API, then Pyrogram as a fallback.
+    bot_id = None
+    try:
+        me = await _flood(api_get_me, "get bot identity")
+        bot_id = int((me or {}).get("id") or 0) or None
+    except Exception:
+        bot_id = None
+
+    member_api = None
+    if bot_id and canonical_id is not None:
+        try:
+            member_api = await _flood(
+                lambda: api_get_chat_member(canonical_id, bot_id),
+                f"Bot API target permission check {canonical_id}",
+            )
+        except Exception:
+            member_api = None
+
+    if member_api is not None:
+        status = str(member_api.get("status") or "").lower()
+        is_creator = status in {"creator", "owner"}
+        is_admin = is_creator or status == "administrator"
+        if not is_admin:
+            raise ValueError("The bot is no longer an administrator in this channel.")
+        if not is_creator and member_api.get("can_edit_messages") is False:
             raise ValueError("The bot administrator cannot edit channel messages.")
+    elif chat is not None:
+        try:
+            member = await _flood(
+                lambda: Bot.get_chat_member(int(canonical_id or chat.id), "me"),
+                f"target permission check {canonical_id or chat.id}",
+            )
+            status = str(getattr(member, "status", "")).lower()
+            is_creator = "creator" in status or "owner" in status
+            if not (is_creator or "administrator" in status):
+                raise ValueError("The bot is no longer an administrator in this channel.")
+            privileges = getattr(member, "privileges", None)
+            if not is_creator and privileges is not None:
+                if hasattr(privileges, "can_edit_messages") and not privileges.can_edit_messages:
+                    raise ValueError("The bot administrator cannot edit channel messages.")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(
+                "Could not verify the bot's channel permissions. "
+                "Refresh the channel list and try again."
+            ) from exc
+    else:
+        raise ValueError(
+            "Could not verify the bot's channel permissions. "
+            "Use Add / Check Channel to register the channel again."
+        )
 
+    if chat is None:
+        # Re-hydrate Pyrogram's peer cache using the username when possible.
+        # Numeric-only private channels can still be unusable by Pyrogram here,
+        # so fail with a clear message instead of pretending selection succeeded.
+        if username:
+            try:
+                chat = await _flood(
+                    lambda: Bot.get_chat("@" + username),
+                    f"peer hydration @{username}",
+                )
+            except Exception:
+                chat = None
+        if chat is None:
+            raise ValueError(
+                "Channel is valid and the bot has edit permission, but this "
+                "Pyrogram session has no peer for it. Forward one message from "
+                "the channel to this bot, then Refresh Channel List."
+            )
+
+    # Persist the canonical metadata so the next selector render has the best
+    # available reference (especially the public username).
+    try:
+        await _remember_channel(chat)
+    except Exception:
+        pass
     return chat
 
 
@@ -1587,9 +1678,9 @@ async def caption_maintenance_callback(_, query):
             selector = int(parts[2])
             channels = session.get("channels") or []
 
-            # Current buttons carry the stable Telegram channel ID. Keep
-            # backward compatibility with older keyboards that carried an
-            # array index.
+            # Current channel buttons carry the stable Telegram channel ID.
+            # Older messages may still contain a positional index, so accept
+            # both formats for backward compatibility.
             selected = next(
                 (
                     item for item in channels
@@ -1823,8 +1914,8 @@ async def caption_maintenance_callback(_, query):
     except StopPropagation:
         raise
     except Exception as exc:
-        # The callback query is already answered at handler entry. A second
-        # query.answer() can fail with QUERY_ID_INVALID and hide the real error.
+        # query.answer() is already attempted at handler entry. Answering the
+        # same callback twice can produce QUERY_ID_INVALID and hide the error.
         try:
             await query.message.reply_text(f"❌ {str(exc)[:3500]}")
         except Exception as report_error:
