@@ -999,10 +999,7 @@ async def _edit_one(job, message, runtime=None):
         media = getattr(message, "media", None)
         if media == enums.MessageMediaType.PHOTO:
             return "skipped"
-        if getattr(message, "media_group_id", None) and media not in {
-            enums.MessageMediaType.VIDEO,
-            enums.MessageMediaType.ANIMATION,
-        }:
+        if getattr(message, "media_group_id", None) and media != enums.MessageMediaType.VIDEO:
             return "skipped"
 
         media_file = getattr(message, media.value, None) if hasattr(media, "value") else None
@@ -1016,6 +1013,9 @@ async def _edit_one(job, message, runtime=None):
             if not safe_name:
                 safe_name = f"media-{int(message.id)}.bin"
             media_path = os.path.join(temp_dir, safe_name)
+
+            if job.get("dry_run"):
+                return "changed"
 
             downloaded = await _flood(
                 lambda: Bot.download_media(message, file_name=media_path),
@@ -1068,9 +1068,6 @@ async def _edit_one(job, message, runtime=None):
                 )
             else:
                 return "skipped"
-
-            if job.get("dry_run"):
-                return "changed"
 
             await _flood(
                 lambda: Bot.edit_message_media(
