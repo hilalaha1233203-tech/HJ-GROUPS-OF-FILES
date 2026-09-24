@@ -206,3 +206,4 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
         await asyncio.sleep(sl.value)
         await save_media_in_channel(bot, editable, message)
     except Exception as err:
+        await editable.edit(f"Something Went Wrong!\n\n**Error:** `{err}`")
