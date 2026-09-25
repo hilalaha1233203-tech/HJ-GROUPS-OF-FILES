@@ -325,6 +325,11 @@ async def main(bot: Client, message: Message):
             )
             return
 
+        # Forwarded files are collected by bot.py for /batch and /custom_batch.
+        # Do not emit one action menu for every forwarded file.
+        if _is_forwarded_message(message):
+            return
+
         try:
             existing_message_id = await resolve_existing_db_message(bot, message)
             if existing_message_id is not None:
