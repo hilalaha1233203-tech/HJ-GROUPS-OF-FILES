@@ -147,35 +147,94 @@ async def _ensure_peer(bot, chat_id):
         ) from exc
 
 async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
-    channel_id=channel_id or await db.get_db_channel_id()
-    if channel_id is None: raise RuntimeError("Storage channel is not configured.")
-    try: source=await bot.get_messages(channel_id,file_id)
-    except Exception: source=None
-    template=await _get("custom_caption","")
-    cap=_caption_text(source,template) if source else None
-    cap_mode=_caption_parse_mode(template) if cap else None
+    channel_id = channel_id or await db.get_db_channel_id()
+    if channel_id is None:
+        raise RuntimeError("Storage channel is not configured.")
+
+    template = await _get("custom_caption", "")
+    cap = None
+    cap_mode = _caption_parse_mode(template) if template else None
+    try:
+        source = await bot.get_messages(channel_id, file_id)
+    except Exception:
+        source = None
+    if source is not None:
+        cap = _caption_text(source, template)
+
+    protect = await db.get_protect_content()
+    markup = _buttons_markup()
+
     try:
         await send_file._acquire_delivery_slot(user_id)
-        kwargs={"chat_id":user_id,"from_chat_id":channel_id,"message_id":file_id,"caption":cap,"protect_content":await db.get_protect_content(),"reply_markup":_buttons_markup()}
-        if cap_mode: kwargs["parse_mode"]=enums.ParseMode.HTML
-        return await bot.copy_message(**kwargs)
-    except Exception as exc:
-        from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
-        await send_file._acquire_delivery_slot(user_id)
-        api_kwargs={"chat_id":user_id,"from_chat_id":channel_id,"message_id":file_id,"protect_content":await db.get_protect_content()}
+        kwargs = {
+            "chat_id": user_id,
+            "from_chat_id": channel_id,
+            "message_id": file_id,
+            "protect_content": protect,
+            "reply_markup": markup,
+        }
         if cap is not None:
-            api_kwargs["caption"]=cap
-        if cap_mode:
-            api_kwargs["parse_mode"]="HTML"
-        copied=await copy_message(**api_kwargs)
-        cid=copied.get("message_id") if isinstance(copied,dict) else getattr(copied,"id",None)
-        if cid and cap:
-            try: await edit_message_caption(user_id,cid,cap,parse_mode=cap_mode)
-            except Exception: pass
-        kb={"inline_keyboard":[[{"text":l,"url":_url(BUTTON_CACHE.get(k))}] for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")) if _url(BUTTON_CACHE.get(k))]}
-        if cid and kb["inline_keyboard"]:
-            try: await edit_message_reply_markup(user_id,cid,kb)
-            except Exception: pass
+            kwargs["caption"] = cap
+            if cap_mode:
+                kwargs["parse_mode"] = enums.ParseMode.HTML
+        sent = await bot.copy_message(**kwargs)
+
+        # A fresh deployment may be able to copy the private message while
+        # get_messages() cannot resolve its peer. Use the returned Message
+        # itself to render the custom caption in that case.
+        if template and cap is None:
+            rendered = _caption_text(sent, template)
+            if rendered:
+                try:
+                    await bot.edit_message_caption(
+                        chat_id=user_id,
+                        message_id=int(sent.id),
+                        caption=rendered,
+                        parse_mode=enums.ParseMode.HTML if cap_mode else None,
+                    )
+                except Exception:
+                    pass
+        return sent
+    except Exception:
+        from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
+
+        await send_file._acquire_delivery_slot(user_id)
+        api_kwargs = {
+            "chat_id": user_id,
+            "from_chat_id": channel_id,
+            "message_id": file_id,
+            "protect_content": protect,
+        }
+        # Do not omit the original caption when custom-caption metadata is
+        # unavailable. The Bot API response gives us the actual media metadata,
+        # which is then used to build the custom caption.
+        if cap is not None:
+            api_kwargs["caption"] = cap
+            if cap_mode:
+                api_kwargs["parse_mode"] = "HTML"
+        copied = await copy_message(**api_kwargs)
+        cid = copied.get("message_id") if isinstance(copied, dict) else getattr(copied, "id", None)
+
+        if template and cid is not None:
+            rendered = _caption_text(copied, template)
+            if rendered:
+                try:
+                    await edit_message_caption(
+                        user_id,
+                        int(cid),
+                        rendered,
+                        parse_mode="HTML" if cap_mode else None,
+                    )
+                except Exception:
+                    pass
+
+        if cid:
+            buttons = build_channel_buttons_json()
+            if buttons:
+                try:
+                    await api_edit_message_reply_markup(user_id, int(cid), buttons)
+                except Exception:
+                    pass
         return copied
 send_file.media_forward=enhanced_media_forward
 
