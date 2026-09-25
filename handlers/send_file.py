@@ -320,8 +320,7 @@ async def _send_batch_delete_notice_once(bot, user_id: int, delivered_ids, delay
         notice_id = getattr(notice, "id", None) if not isinstance(notice, dict) else notice.get("message_id")
         if notice_id:
             delivered_ids.append(int(notice_id))
-    task = asyncio.create_task(_delete_delivered_messages(bot, user_id, delivered_ids, delay))
-    _track_delete_task(task)
+    await schedule_persistent_delete(user_id, delivered_ids, delay)
 
 
 async def send_media_and_reply(
