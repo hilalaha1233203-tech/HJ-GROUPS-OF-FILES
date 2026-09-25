@@ -655,7 +655,13 @@ async def _send_users(m):
         status = user.get("ban_status") or {}
         banned = status.get("is_banned", False)
         badge = "🚫 BANNED" if banned else "✅ Active"
-        lines.append(f"{count}. `{user_id}` — {badge} — `{join_date}`")
+        try:
+            telegram_user = await Bot.get_users(int(user_id))
+            username = getattr(telegram_user, "username", None)
+        except Exception:
+            username = None
+        username_display = f"@{username}" if username else "No Username"
+        lines.append(f"{count}. {username_display} — `{user_id}` — {badge} — `{join_date}`")
     if count == 0:
         lines.append("No users found.")
     text = "\n".join(lines)
