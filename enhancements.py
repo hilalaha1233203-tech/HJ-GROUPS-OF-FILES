@@ -84,15 +84,42 @@ def _caption_parse_mode(template):
     return None
 
 def _caption_text(message, template):
-    if not template: return None
-    try: name,size=send_file._file_meta(message); size=send_file.human_size(size)
-    except Exception: name,size="Telegram Media","Unknown"
-    original=str(getattr(message,"caption",None) or getattr(message,"text",None) or "").strip(); user=getattr(message,"from_user",None)
-    html_mode=_caption_parse_mode(template) == "HTML"
-    vals={"file_name":name or "Telegram Media","file_size":size,"caption":original,"username":getattr(user,"username","") if user else "","user_id":str(getattr(user,"id","") or "") if user else "","first_name":getattr(user,"first_name","") if user else ""}
-    for k,v in vals.items():
-        value = html.escape(str(v), quote=False) if html_mode else str(v)
-        template=template.replace("{"+k+"}",value)
+    if not template:
+        return None
+    try:
+        name, size = send_file._file_meta(message)
+        size = send_file.human_size(size)
+    except Exception:
+        name, size = "Telegram Media", "Unknown"
+
+    if isinstance(message, dict):
+        original = str(message.get("caption") or message.get("text") or "").strip()
+        user = message.get("from") or {}
+    else:
+        original = str(
+            getattr(message, "caption", None)
+            or getattr(message, "text", None)
+            or ""
+        ).strip()
+        user = getattr(message, "from_user", None)
+
+    def user_value(key):
+        if isinstance(user, dict):
+            return user.get(key) or ""
+        return getattr(user, key, "") if user else ""
+
+    html_mode = _caption_parse_mode(template) == "HTML"
+    vals = {
+        "file_name": name or "Telegram Media",
+        "file_size": size,
+        "caption": original,
+        "username": user_value("username"),
+        "user_id": str(user_value("id") or ""),
+        "first_name": user_value("first_name"),
+    }
+    for k, value in vals.items():
+        value = html.escape(str(value), quote=False) if html_mode else str(value)
+        template = template.replace("{" + k + "}", value)
     return template[:1024]
 
 async def _caption(message):
