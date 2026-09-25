@@ -487,53 +487,97 @@ async def direct_start(bot,m):
     except Exception as exc: await m.reply_text(f"❌ Could not open direct link.\n`{exc}`"); raise StopPropagation
 
 async def _deliver_direct(bot,user_id,items):
-    ids=[]; protect=await db.get_protect_content(); template=await _get("custom_caption","")
-    for chat_id,mid in items:
-        chat_id=int(chat_id); mid=int(mid)
-        await _ensure_peer(bot,chat_id)
-        # Bot API copyMessage accepts private channel IDs directly and avoids
-        # Pyrogram's fresh-session PEER_ID_INVALID/access-hash problem.
-        source=None
+    ids=[]
+    failures=[]
+    protect=await db.get_protect_content()
+    template=await _get("custom_caption","")
+    cap_mode=_caption_parse_mode(template) if template else None
+    if not items:
+        raise ValueError("This direct delivery contains no messages.")
+
+    checked_chats=set()
+    for chat_id,_ in items:
+        chat_id=int(chat_id)
+        if chat_id not in checked_chats:
+            await _ensure_peer(bot,chat_id)
+            checked_chats.add(chat_id)
+
+    rows=[]
+    for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
+        u=_url(BUTTON_CACHE.get(k))
+        if u:
+            rows.append([{"text":l,"url":u}])
+    markup={"inline_keyboard":rows} if rows else None
+
+    total=len(items)
+    for index,(chat_id,mid) in enumerate(items, start=1):
+        chat_id=int(chat_id)
+        mid=int(mid)
         try:
-            source=await bot.get_messages(chat_id,mid)
-        except Exception:
-            source=None
-        caption=_caption_text(source,template) if source else None
-        cap_mode=_caption_parse_mode(template) if caption else None
-        markup=None
-        rows=[]
-        for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
-            u=_url(BUTTON_CACHE.get(k))
-            if u: rows.append([{"text":l,"url":u}])
-        if rows: markup={"inline_keyboard":rows}
-        api_kwargs={
-            "chat_id":int(user_id),
-            "from_chat_id":chat_id,
-            "message_id":mid,
-            "protect_content":protect,
-            "reply_markup":markup,
-        }
-        if caption is not None:
-            api_kwargs["caption"]=caption
-        if cap_mode:
-            api_kwargs["parse_mode"]="HTML"
-        await send_file._acquire_delivery_slot(user_id)
-        sent=await api_copy_message(**api_kwargs)
-        sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
-        if sid: ids.append(int(sid))
+            api_kwargs={
+                "chat_id":int(user_id),
+                "from_chat_id":chat_id,
+                "message_id":mid,
+                "protect_content":protect,
+                "reply_markup":markup,
+            }
+            await send_file._acquire_delivery_slot(user_id)
+            sent=await api_copy_message(**api_kwargs)
+            sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
+            if sid:
+                ids.append(int(sid))
+
+            if template and sid is not None:
+                rendered=_caption_text(sent,template)
+                if rendered:
+                    try:
+                        await api_edit_message_caption(
+                            int(user_id),
+                            int(sid),
+                            rendered,
+                            parse_mode=cap_mode,
+                        )
+                    except Exception as caption_error:
+                        print("[CAPTION] Direct caption repair failed message=%s: %s" % (mid, caption_error))
+
+            if total > 100 and index % 100 == 0:
+                print("[DIRECT_BATCH] user=%s delivered=%s/%s" % (user_id,index,total))
+        except Exception as delivery_error:
+            failures.append((chat_id,mid,str(delivery_error)[:500]))
+            print("[DIRECT_BATCH] user=%s failed message=%s: %s" % (user_id,mid,delivery_error))
+            continue
+
+    if not ids and failures:
+        raise RuntimeError(
+            "None of the %s direct files could be delivered. First error: %s"
+            % (total, failures[0][2])
+        )
+
     delay=await db.get_auto_delete_seconds()
     if delay>0 and ids:
         delete_ids=list(ids)
         try:
             notice=await send_file.send_delete_notice(bot,user_id,delay)
             nid=getattr(notice,"id",None) if notice else None
-            if nid: delete_ids.append(int(nid))
+            if nid:
+                delete_ids.append(int(nid))
         except Exception as notice_error:
-            print(f"[AUTO_DELETE] Enhanced notice failed for user={user_id}: {notice_error}")
+            print("[AUTO_DELETE] Enhanced notice failed for user=%s: %s" % (user_id,notice_error))
         try:
             await send_file.schedule_persistent_delete(user_id,delete_ids,delay)
         except Exception as delete_error:
-            print(f"[AUTO_DELETE] Direct delivery schedule failed for user={user_id}: {delete_error}")
+            print("[AUTO_DELETE] Direct delivery schedule failed for user=%s: %s" % (user_id,delete_error))
+
+    if failures:
+        failed_ids=", ".join(str(mid) for _,mid,_ in failures[:20])
+        extra="\n\n⚠️ Failed files: `%s`" % len(failures)
+        if failed_ids:
+            extra += "\nMessage IDs: `%s`" % failed_ids
+        await api_send_message(
+            chat_id=int(user_id),
+            text="✅ Delivered `%s` of `%s` files.%s" % (len(ids),total,extra),
+            disable_web_page_preview=True,
+        )
 
 _original_run_bot=bot_legacy.run_bot
 async def _run_bot_enhanced():
