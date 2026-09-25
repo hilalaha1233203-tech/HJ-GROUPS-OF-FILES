@@ -232,33 +232,55 @@ async def start(bot: Client, cmd: Message):
                             except Exception:
                                 pass
 
-                        delivered_ids = []
-                        for item in ids:
-                            delivered = await api_copy_message(
-                                chat_id=cmd.from_user.id,
-                                from_chat_id=channel_id,
-                                message_id=int(item),
-                                protect_content=protect,
-                            )
-                            delivered_id = (delivered or {}).get("message_id")
-                            if delivered_id:
-                                delivered_ids.append(delivered_id)
-
-                        notice = await api_send_message(
-                            chat_id=cmd.from_user.id,
-                            text=(f"Files will be deleted in {max(1, delay // 60)} minute(s). Please forward and save them."
-                                  if delay > 0 else
-                                  "Files are not scheduled for automatic deletion. Please forward and save them."),
+                        message_ids = [int(item) for item in ids]
+                        await cmd.reply_text(
+                            text=f"**Total Files:** `{len(message_ids)}`",
+                            quote=True,
                             disable_web_page_preview=True,
                         )
-                        if notice and notice.get("message_id"):
-                            delivered_ids.append(notice["message_id"])
-                        await _schedule_api_delete(cmd.from_user.id, delivered_ids, delay)
+                        for message_id in message_ids:
+                            await send_media_and_reply(
+                                bot,
+                                user_id=cmd.from_user.id,
+                                file_id=message_id,
+                                channel_id=channel_id,
+                            )
                         return
 
                 delivered_id = (index_copy or {}).get("message_id")
                 if not delivered_id:
                     raise RuntimeError("Telegram Bot API returned no message ID")
+
+                try:
+                    from enhancements import _caption_text, _caption_parse_mode, _get, BUTTON_CACHE, _url
+                    template = await _get("custom_caption", "")
+                    if template:
+                        caption = _caption_text(index_copy, template)
+                        if caption:
+                            await api_edit_message_caption(
+                                cmd.from_user.id,
+                                int(delivered_id),
+                                caption,
+                                parse_mode=_caption_parse_mode(template),
+                            )
+                        rows = []
+                        for key, label in (
+                            ("main", "Main Channel"),
+                            ("pocket", "Pocket Library"),
+                            ("backup", "Backup Channel"),
+                        ):
+                            url = _url(BUTTON_CACHE.get(key))
+                            if url:
+                                rows.append([{"text": label, "url": url}])
+                        if rows:
+                            await api_edit_message_reply_markup(
+                                cmd.from_user.id,
+                                int(delivered_id),
+                                {"inline_keyboard": rows},
+                            )
+                except Exception as caption_error:
+                    print(f"[CAPTION] Fallback caption repair failed: {caption_error}")
+
                 notice = await api_send_message(
                     chat_id=cmd.from_user.id,
                     text=(f"Files will be deleted in {max(1, delay // 60)} minute(s). Please forward and save them."
@@ -269,8 +291,7 @@ async def start(bot: Client, cmd: Message):
                 delete_ids = [delivered_id]
                 if notice and notice.get("message_id"):
                     delete_ids.append(notice["message_id"])
-                await _schedule_api_delete(cmd.from_user.id, delete_ids, delay)
-                return
+                await _schedule_api_delete(cmd.from_user.id, delete_ids, delay)                return
             except Exception:
                 raise peer_error
         message_ids = []
