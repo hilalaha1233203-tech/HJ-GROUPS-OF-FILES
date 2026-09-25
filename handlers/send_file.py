@@ -208,17 +208,22 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
             )
             copied_id = (copied or {}).get("message_id")
             if copied_id and caption:
+                buttons = build_channel_buttons_json() or {"inline_keyboard": []}
                 try:
-                    await api_edit_message_caption(user_id, copied_id, caption)
-                except Exception:
-                    pass
+                    await api_edit_message_caption(
+                        user_id,
+                        copied_id,
+                        caption,
+                        reply_markup=buttons,
+                    )
+                except Exception as caption_error:
+                    print(f"[CAPTION] Fallback delivery caption repair failed message={copied_id}: {caption_error}")
             if copied_id:
-                buttons = build_channel_buttons_json()
-                if buttons:
-                    try:
-                        await api_edit_message_reply_markup(user_id, copied_id, buttons)
-                    except Exception:
-                        pass
+                buttons = build_channel_buttons_json() or {"inline_keyboard": []}
+                try:
+                    await api_edit_message_reply_markup(user_id, copied_id, buttons)
+                except Exception as button_error:
+                    print(f"[BUTTONS] Fallback delivery keyboard repair failed message={copied_id}: {button_error}")
             return copied
         except Exception:
             raise pyrogram_error
