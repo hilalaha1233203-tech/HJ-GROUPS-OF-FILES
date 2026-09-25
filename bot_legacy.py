@@ -254,8 +254,9 @@ async def start(bot: Client, cmd: Message):
                     raise RuntimeError("Telegram Bot API returned no message ID")
 
                 try:
-                    from enhancements import _caption_text, _caption_parse_mode, _get, BUTTON_CACHE, _url
+                    from enhancements import _caption_text, _caption_parse_mode, _get, _buttons_json
                     template = await _get("custom_caption", "")
+                    buttons = _buttons_json()
                     if template:
                         caption = _caption_text(index_copy, template)
                         if caption:
@@ -264,24 +265,16 @@ async def start(bot: Client, cmd: Message):
                                 int(delivered_id),
                                 caption,
                                 parse_mode=_caption_parse_mode(template),
+                                reply_markup=buttons,
                             )
-                        rows = []
-                        for key, label in (
-                            ("main", "Main Channel"),
-                            ("pocket", "Pocket Library"),
-                            ("backup", "Backup Channel"),
-                        ):
-                            url = _url(BUTTON_CACHE.get(key))
-                            if url:
-                                rows.append([{"text": label, "url": url}])
-                        if rows:
-                            await api_edit_message_reply_markup(
-                                cmd.from_user.id,
-                                int(delivered_id),
-                                {"inline_keyboard": rows},
-                            )
+                    else:
+                        await api_edit_message_reply_markup(
+                            cmd.from_user.id,
+                            int(delivered_id),
+                            buttons,
+                        )
                 except Exception as caption_error:
-                    print(f"[CAPTION] Fallback caption repair failed: {caption_error}")
+                    print(f"[CAPTION] Fallback caption/button repair failed: {caption_error}")
 
                 notice = await api_send_message(
                     chat_id=cmd.from_user.id,
