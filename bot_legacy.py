@@ -353,21 +353,10 @@ async def main(bot: Client, message: Message):
             )
             return
 
-        if message.media and not (
-            getattr(message, "forward_from_chat", None)
-            or getattr(message, "forward_from", None)
-            or getattr(getattr(message, "forward_origin", None), "chat", None)
-        ):
-            await message.reply_text(
-                text="**Choose an option from below:**",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📦 Save in Batch", callback_data="addToBatchTrue")],
-                    [InlineKeyboardButton("🔗 Get Sharable Link", callback_data="addToBatchFalse")]
-                ]),
-                quote=True,
-                disable_web_page_preview=True
-            )
-
+        # Media messages are intentionally silent here. Batch/link actions are
+        # available through their explicit commands, and forwarded media is
+        # tracked by bot.py for batch workflows. Do not inject the legacy
+        # per-file "Choose an option" menu into the user's chat.
         await message.continue_propagation()
 
     elif message.chat.type == enums.ChatType.CHANNEL:
