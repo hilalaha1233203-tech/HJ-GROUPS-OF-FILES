@@ -300,7 +300,11 @@ async def main(bot: Client, message: Message):
             )
             return
 
-        if message.media:
+        if message.media and not (
+            getattr(message, "forward_from_chat", None)
+            or getattr(message, "forward_from", None)
+            or getattr(getattr(message, "forward_origin", None), "chat", None)
+        ):
             await message.reply_text(
                 text="**Choose an option from below:**",
                 reply_markup=InlineKeyboardMarkup([
