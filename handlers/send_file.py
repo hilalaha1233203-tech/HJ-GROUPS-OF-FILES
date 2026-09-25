@@ -169,6 +169,7 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
         return await media_forward(bot, user_id, file_id, channel_id)
     except Exception as pyrogram_error:
         try:
+            await _acquire_delivery_slot()
             copied = await api_copy_message(
                 chat_id=user_id,
                 from_chat_id=channel_id,
