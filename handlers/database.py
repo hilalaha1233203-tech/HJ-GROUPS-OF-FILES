@@ -332,12 +332,12 @@ class Database:
         )
         return response.data or []
 
-    async def mark_auto_delete_processing(self, job_id):
+    async def mark_auto_delete_processing(self, job_id, previous_attempts=0):
         response = await self._execute(
             lambda: self.client.table("bot_auto_delete_queue")
             .update({
                 "status": "processing",
-                "attempts": 1,
+                "attempts": max(1, int(previous_attempts) + 1),
                 "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             })
             .eq("id", int(job_id))
