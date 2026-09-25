@@ -4,14 +4,39 @@
 
 import asyncio
 import requests
+import threading
+import time
+from collections import deque
 from configs import Config
 
 
 _API_BASE = f"https://api.telegram.org/bot{Config.BOT_TOKEN}"
 
+# Shared Bot API request limiter. Telegram documents about 30 messages/sec for
+# free broadcasts; 25 requests/sec leaves a safety margin for this fallback path.
+_API_RATE_LIMIT = 25
+_API_RATE_WINDOW = 1.0
+_API_RATE_LOCK = threading.Lock()
+_API_RATE_TIMESTAMPS = deque()
+
+
+def _wait_for_api_slot():
+    while True:
+        with _API_RATE_LOCK:
+            now = time.monotonic()
+            cutoff = now - _API_RATE_WINDOW
+            while _API_RATE_TIMESTAMPS and _API_RATE_TIMESTAMPS[0] <= cutoff:
+                _API_RATE_TIMESTAMPS.popleft()
+            if len(_API_RATE_TIMESTAMPS) < _API_RATE_LIMIT:
+                _API_RATE_TIMESTAMPS.append(now)
+                return
+            wait_for = max(0.01, _API_RATE_TIMESTAMPS[0] + _API_RATE_WINDOW - now)
+        time.sleep(wait_for)
+
 
 def _call(method: str, payload: dict, max_retries: int = 5):
     for attempt in range(max_retries + 1):
+        _wait_for_api_slot()
         try:
             response = requests.post(
                 f"{_API_BASE}/{method}",
@@ -29,7 +54,6 @@ def _call(method: str, payload: dict, max_retries: int = 5):
 
         retry_after = (data.get("parameters") or {}).get("retry_after")
         if retry_after is not None and attempt < max_retries:
-            import time
             time.sleep(max(1, int(retry_after)))
             continue
 
