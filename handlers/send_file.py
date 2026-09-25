@@ -218,6 +218,7 @@ async def send_delete_notice(bot: Client, user_id: int, delay: int):
     if not text:
         return None
     try:
+        await _acquire_delivery_slot()
         return await bot.send_message(chat_id=user_id, text=text, disable_web_page_preview=True)
     except FloodWait as e:
         await asyncio.sleep(e.value)
