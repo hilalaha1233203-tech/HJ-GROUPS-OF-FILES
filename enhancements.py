@@ -204,10 +204,14 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
             "from_chat_id": channel_id,
             "message_id": file_id,
             "protect_content": protect,
+            # Never inherit the storage message's old Save-in-Batch/Get-Link
+            # keyboard. Delivery should only show the configured channel buttons.
+            "reply_markup": markup_json if markup_json is not None else {"inline_keyboard": []},
         }
-        # Do not omit the original caption when custom-caption metadata is
-        # unavailable. The Bot API response gives us the actual media metadata,
-        # which is then used to build the custom caption.
+        # If the MTProto peer cannot be hydrated, Bot API copyMessage returns
+        # only a MessageId, so there is no reliable media metadata available
+        # for {file_name}/{file_size}. In that case omit a replacement caption
+        # and let Telegram preserve the stored caption instead.
         if cap is not None:
             api_kwargs["caption"] = cap
             if cap_mode:
@@ -229,12 +233,11 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
                     pass
 
         if cid:
-            buttons = build_channel_buttons_json()
-            if buttons:
-                try:
-                    await api_edit_message_reply_markup(user_id, int(cid), buttons)
-                except Exception:
-                    pass
+            buttons = build_channel_buttons_json() or {"inline_keyboard": []}
+            try:
+                await api_edit_message_reply_markup(user_id, int(cid), buttons)
+            except Exception:
+                pass
         return copied
 send_file.media_forward=enhanced_media_forward
 
