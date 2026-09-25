@@ -163,3 +163,22 @@ async def delete_message(chat_id: int, message_id: int):
         "deleteMessage",
         {"chat_id": int(chat_id), "message_id": int(message_id)},
     )
+
+async def delete_messages(chat_id: int, message_ids):
+    ids = []
+    for value in message_ids or []:
+        try:
+            mid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if mid > 0 and mid not in ids:
+            ids.append(mid)
+    if not ids:
+        return True
+    if len(ids) > 100:
+        raise ValueError("delete_messages accepts at most 100 message IDs per Telegram Bot API call.")
+    return await asyncio.to_thread(
+        _call,
+        "deleteMessages",
+        {"chat_id": int(chat_id), "message_ids": ids},
+    )
