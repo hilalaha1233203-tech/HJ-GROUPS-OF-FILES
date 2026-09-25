@@ -11,7 +11,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import bot_legacy
 from configs import Config
 from handlers.database import db
-from handlers.telegram_api import copy_message as api_copy_message
+from handlers.telegram_api import copy_message as api_copy_message, copy_messages as api_copy_messages
 from handlers import save_media, send_file
 Bot = bot_legacy.Bot
 OWNER = int(Config.BOT_OWNER or 0)
@@ -107,9 +107,11 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
     except Exception: source=None
     cap=await _caption(source) if source else None
     try:
+        await send_file._acquire_delivery_slot()
         return await bot.copy_message(chat_id=user_id,from_chat_id=channel_id,message_id=file_id,caption=cap,protect_content=await db.get_protect_content(),reply_markup=_buttons_markup())
     except Exception as exc:
         from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
+        await send_file._acquire_delivery_slot()
         copied=await copy_message(chat_id=user_id,from_chat_id=channel_id,message_id=file_id,protect_content=await db.get_protect_content())
         cid=copied.get("message_id") if isinstance(copied,dict) else getattr(copied,"id",None)
         if cid and cap:
@@ -178,42 +180,33 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
     try:
         channel_id=await db.get_db_channel_id(); source_chat_id=int(source_chat_id or editable.chat.id)
         if channel_id is None: raise RuntimeError("Storage channel is not configured.")
+        normalized_ids=[]
+        seen_ids=set()
+        for raw_mid in message_ids:
+            try: value=int(raw_mid)
+            except (TypeError,ValueError): continue
+            if value>0 and value not in seen_ids:
+                normalized_ids.append(value); seen_ids.add(value)
+        if not normalized_ids:
+            await editable.edit("❌ No valid message IDs were provided."); return
+        if len(normalized_ids)>100:
+            await editable.edit("❌ Batch size is limited to 100 files per link. For production, use 5 files per link."); return
+
         saved=[]
         api_rows=[]
         for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
             u=_url(BUTTON_CACHE.get(k))
             if u: api_rows.append([{"text":l,"url":u}])
         api_markup={"inline_keyboard":api_rows} if api_rows else None
-        for mid in message_ids:
-            try:
-                src=await bot.get_messages(source_chat_id,int(mid))
-            except Exception:
-                src=None
-            caption=await _caption(src) if src else None
-            try:
-                sent=await bot.copy_message(
-                    chat_id=channel_id,
-                    from_chat_id=source_chat_id,
-                    message_id=int(mid),
-                    caption=caption,
-                    protect_content=await db.get_protect_content(),
-                    reply_markup=_buttons_markup(),
-                )
-            except Exception as pyrogram_error:
-                try:
-                    sent=await api_copy_message(
-                        chat_id=channel_id,
-                        from_chat_id=source_chat_id,
-                        message_id=int(mid),
-                        protect_content=await db.get_protect_content(),
-                        caption=caption,
-                        reply_markup=api_markup,
-                    )
-                except Exception as api_error:
-                    print(f"[STORAGE_BATCH] Message {mid} failed. Pyrogram: {pyrogram_error}; Bot API: {api_error}")
-                    continue
-            sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
-            if sid:saved.append(int(sid))
+        copied_ids=await api_copy_messages(
+            chat_id=channel_id,
+            from_chat_id=source_chat_id,
+            message_ids=normalized_ids,
+            protect_content=await db.get_protect_content(),
+        )
+        for item in copied_ids or []:
+            sid=item.get("message_id") if isinstance(item,dict) else getattr(item,"message_id",None)
+            if sid is not None: saved.append(int(sid))
         if not saved: raise RuntimeError("No files were available to save in this batch.")
         try:
             idx=await bot.send_message(channel_id," ".join(map(str,saved)),disable_web_page_preview=True)
