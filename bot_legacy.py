@@ -293,7 +293,8 @@ async def start(bot: Client, cmd: Message):
                 delete_ids = [delivered_id]
                 if notice and notice.get("message_id"):
                     delete_ids.append(notice["message_id"])
-                await _schedule_api_delete(cmd.from_user.id, delete_ids, delay)                return
+                await _schedule_api_delete(cmd.from_user.id, delete_ids, delay)
+                return
             except Exception:
                 raise peer_error
         message_ids = []
