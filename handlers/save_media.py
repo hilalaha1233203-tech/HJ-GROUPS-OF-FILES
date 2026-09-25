@@ -114,6 +114,12 @@ async def save_batch_media_in_channel(
         if not normalized_ids:
             await editable.edit("No valid message IDs were provided for this batch.")
             return
+        if len(normalized_ids) > 100:
+            await editable.edit(
+                "Batch size is limited to 100 files per link. "
+                "For your production setup, use 5 files per link."
+            )
+            return
 
         # Telegram supports copying up to 100 messages in one Bot API request.
         # Do not add a fixed sleep per file: Telegram returns retry_after when
@@ -217,7 +223,7 @@ async def save_media_in_channel(bot: Client, editable: Message, message: Message
 
         payload = f"{channel_id}|{file_er_id}"
         share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=HJGroups_{str_to_b64(payload)}"
-        short_link = get_short(share_link)
+        short_link = await get_short_async(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
             buttons[0].append(InlineKeyboardButton("Short Link", url=short_link))
