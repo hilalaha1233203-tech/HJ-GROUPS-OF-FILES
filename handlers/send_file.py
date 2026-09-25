@@ -9,7 +9,6 @@ from configs import Config
 from handlers.database import db
 from handlers.telegram_api import copy_message as api_copy_message, edit_message_caption as api_edit_message_caption, edit_message_reply_markup as api_edit_message_reply_markup
 
-_DELETE_TASKS = set()
 _BATCH_DELETE_CONTEXTS = {}
 
 # Telegram documents a practical free broadcast ceiling of about 30 messages/sec.
@@ -207,22 +206,74 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
 
 
 async def _delete_delivered_messages(bot: Client, chat_id: int, message_ids, delay: int):
+    """Compatibility wrapper: persist the deletion instead of a volatile sleep task."""
+    return await schedule_persistent_delete(chat_id, message_ids, delay)
+
+
+async def schedule_persistent_delete(chat_id: int, message_ids, delay: int):
+    if int(delay) <= 0:
+        return None
+    return await db.enqueue_auto_delete(int(chat_id), message_ids, int(delay))
+
+
+async def _process_auto_delete_job(bot, job):
+    from handlers.telegram_api import delete_messages as api_delete_messages
+    job_id = int(job["id"])
+    if not await db.mark_auto_delete_processing(job_id):
+        return False
     try:
-        await asyncio.sleep(delay)
-        clean_ids = [int(mid) for mid in message_ids if mid]
-        if clean_ids:
-            await bot.delete_messages(chat_id=int(chat_id), message_ids=clean_ids, revoke=True)
-            print(f"[AUTO_DELETE] Deleted chat={chat_id} messages={clean_ids}")
-    except FloodWait as e:
-        await asyncio.sleep(e.value)
-        await _delete_delivered_messages(bot, chat_id, message_ids, 0)
-    except Exception as err:
-        print(f"[AUTO_DELETE] Failed chat={chat_id} messages={message_ids}: {err}")
+        ids = []
+        for value in job.get("message_ids") or []:
+            try:
+                mid = int(value)
+            except (TypeError, ValueError):
+                continue
+            if mid > 0 and mid not in ids:
+                ids.append(mid)
+        if not ids:
+            await db.complete_auto_delete(job_id)
+            return True
+        for offset in range(0, len(ids), 100):
+            chunk = ids[offset:offset + 100]
+            await _acquire_delivery_slot(int(job["chat_id"]))
+            await api_delete_messages(int(job["chat_id"]), chunk)
+        await db.complete_auto_delete(job_id)
+        print(f"[AUTO_DELETE] Completed job={job_id} chat={job['chat_id']} messages={len(ids)}")
+        return True
+    except FloodWait as exc:
+        await asyncio.sleep(int(exc.value))
+        try:
+            await _acquire_delivery_slot(int(job["chat_id"]))
+            await api_delete_messages(int(job["chat_id"]), ids[:100])
+            await db.complete_auto_delete(job_id)
+            return True
+        except Exception as retry_error:
+            await db.retry_auto_delete(job_id, retry_error, 60)
+            return False
+    except Exception as exc:
+        attempts = int(job.get("attempts") or 0)
+        retry_delay = min(3600, max(30, 30 * (2 ** min(attempts, 5))))
+        await db.retry_auto_delete(job_id, exc, retry_delay)
+        print(f"[AUTO_DELETE] Job={job_id} retry in {retry_delay}s: {exc}")
+        return False
 
 
-def _track_delete_task(task):
-    _DELETE_TASKS.add(task)
-    task.add_done_callback(_DELETE_TASKS.discard)
+async def auto_delete_worker(bot: Client):
+    """Durable worker: pending deletions survive bot restarts/deployments."""
+    print("[AUTO_DELETE] Persistent worker started")
+    while True:
+        try:
+            jobs = await db.get_due_auto_deletes(limit=20)
+            if jobs:
+                for job in jobs:
+                    await _process_auto_delete_job(bot, job)
+            else:
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[AUTO_DELETE] Worker error: {exc}")
+            await asyncio.sleep(5)
 
 
 async def send_delete_notice(bot: Client, user_id: int, delay: int):
@@ -318,7 +369,6 @@ async def send_media_and_reply(
             message_ids.append(getattr(notice, "id", None))
 
     if schedule_delete and delay > 0:
-        task = asyncio.create_task(_delete_delivered_messages(bot, user_id, message_ids, delay))
-        _track_delete_task(task)
+        await schedule_persistent_delete(user_id, message_ids, delay)
 
     return delivered
