@@ -210,10 +210,41 @@ async def _delete_delivered_messages(bot: Client, chat_id: int, message_ids, del
     return await schedule_persistent_delete(chat_id, message_ids, delay)
 
 
+async def _fallback_delete_later(chat_id: int, message_ids, delay: int):
+    try:
+        await asyncio.sleep(max(1, int(delay)))
+        ids = []
+        for value in message_ids or []:
+            try:
+                mid = int(value)
+            except (TypeError, ValueError):
+                continue
+            if mid > 0 and mid not in ids:
+                ids.append(mid)
+        if not ids:
+            return
+        from handlers.telegram_api import delete_messages as api_delete_messages
+        for offset in range(0, len(ids), 100):
+            chunk = ids[offset:offset + 100]
+            await _acquire_delivery_slot(chat_id)
+            await api_delete_messages(int(chat_id), chunk)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        print(f"[AUTO_DELETE] Emergency in-memory fallback failed chat={chat_id}: {exc}")
+
+
 async def schedule_persistent_delete(chat_id: int, message_ids, delay: int):
     if int(delay) <= 0:
         return None
-    return await db.enqueue_auto_delete(int(chat_id), message_ids, int(delay))
+    try:
+        return await db.enqueue_auto_delete(int(chat_id), message_ids, int(delay))
+    except Exception as exc:
+        text = str(exc)
+        if "PGRST205" in text or "bot_auto_delete_queue" in text:
+            print(f"[AUTO_DELETE] Durable queue unavailable; using in-memory fallback: {exc}")
+            return asyncio.create_task(_fallback_delete_later(chat_id, message_ids, delay))
+        raise
 
 
 async def _process_auto_delete_job(bot, job):
