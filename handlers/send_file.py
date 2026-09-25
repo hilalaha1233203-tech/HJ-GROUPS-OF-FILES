@@ -19,19 +19,31 @@ _DELIVERY_RATE_LIMIT = 25
 _DELIVERY_RATE_WINDOW = 1.0
 _DELIVERY_RATE_LOCK = asyncio.Lock()
 _DELIVERY_TIMESTAMPS = []
+_DELIVERY_USER_TIMESTAMPS = {}
 
 
-async def _acquire_delivery_slot():
+async def _acquire_delivery_slot(user_id=None):
     while True:
         async with _DELIVERY_RATE_LOCK:
             now = asyncio.get_running_loop().time()
             cutoff = now - _DELIVERY_RATE_WINDOW
             while _DELIVERY_TIMESTAMPS and _DELIVERY_TIMESTAMPS[0] <= cutoff:
                 _DELIVERY_TIMESTAMPS.pop(0)
-            if len(_DELIVERY_TIMESTAMPS) < _DELIVERY_RATE_LIMIT:
+            user_wait = 0.0
+            if user_id is not None:
+                last_user = _DELIVERY_USER_TIMESTAMPS.get(int(user_id), 0.0)
+                user_wait = max(0.0, 1.0 - (now - last_user))
+
+            global_wait = 0.0
+            if len(_DELIVERY_TIMESTAMPS) >= _DELIVERY_RATE_LIMIT:
+                global_wait = max(0.01, _DELIVERY_TIMESTAMPS[0] + _DELIVERY_RATE_WINDOW - now)
+
+            wait_for = max(user_wait, global_wait)
+            if wait_for <= 0:
                 _DELIVERY_TIMESTAMPS.append(now)
+                if user_id is not None:
+                    _DELIVERY_USER_TIMESTAMPS[int(user_id)] = now
                 return
-            wait_for = max(0.01, _DELIVERY_TIMESTAMPS[0] + _DELIVERY_RATE_WINDOW - now)
         await asyncio.sleep(wait_for)
 
 
@@ -155,7 +167,7 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
     reply_markup = build_channel_buttons()
 
     try:
-        await _acquire_delivery_slot()
+        await _acquire_delivery_slot(user_id)
         return await bot.copy_message(
             chat_id=user_id,
             from_chat_id=channel_id,
@@ -169,7 +181,7 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
         return await media_forward(bot, user_id, file_id, channel_id)
     except Exception as pyrogram_error:
         try:
-            await _acquire_delivery_slot()
+            await _acquire_delivery_slot(user_id)
             copied = await api_copy_message(
                 chat_id=user_id,
                 from_chat_id=channel_id,
@@ -218,7 +230,7 @@ async def send_delete_notice(bot: Client, user_id: int, delay: int):
     if not text:
         return None
     try:
-        await _acquire_delivery_slot()
+        await _acquire_delivery_slot(user_id)
         return await bot.send_message(chat_id=user_id, text=text, disable_web_page_preview=True)
     except FloodWait as e:
         await asyncio.sleep(e.value)
