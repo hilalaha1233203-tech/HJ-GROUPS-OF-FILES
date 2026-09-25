@@ -80,8 +80,15 @@ async def batch(bot,m):
 @Bot.on_message(filters.private & filters.command("custom_batch"),group=-1)
 async def custom_batch(bot,m):
     selected=_latest(m.from_user.id)
-    if not selected: await m.reply_text("📦 Forward the messages you want in the batch, then send `/custom_batch`."); return
-    c=selected[-1]["source_chat_id"]; ids=[x["source_message_id"] for x in selected]; status=await m.reply_text(f"⏳ Creating one batch link for `{len(ids)}` selected messages..."); await save_batch_media_in_channel(bot,status,ids,c,int(m.from_user.id)); _clear(m.from_user.id)
+    if not selected:
+        await m.reply_text("📦 Forward the messages you want in the batch, then send `/custom_batch`.")
+        raise StopPropagation
+    c=selected[-1]["source_chat_id"]
+    ids=[x["source_message_id"] for x in selected]
+    status=await m.reply_text(f"⏳ Creating one batch link for `{len(ids)}` selected messages...")
+    await save_batch_media_in_channel(bot,status,ids,c,int(m.from_user.id))
+    _clear(m.from_user.id)
+    raise StopPropagation
 @Bot.on_message(filters.private & filters.command("special_link"),group=-1)
 async def special(bot,m): await make_batch(bot,m,_latest(m.from_user.id))
 @Bot.on_message(filters.private & filters.command("universal_link"),group=-1)
