@@ -12,11 +12,9 @@ USER_WORKFLOW = {}
 FILESTORE_COMMANDS = list(bot_legacy.FILESTORE_COMMANDS)
 def _state(uid): return USER_WORKFLOW.setdefault(str(int(uid)), {"recent": []})
 def _origin(m):
-    if not m: return None
-    o=getattr(m,"forward_origin",None)
-    if o and getattr(o,"chat",None) and getattr(o,"message_id",None): return int(o.chat.id),int(o.message_id)
-    c=getattr(m,"forward_from_chat",None); mid=getattr(m,"forward_from_message_id",None)
-    return (int(c.id),int(mid)) if c and mid else None
+    if not m:
+        return None
+    return bot_legacy._forwarded_origin(m)
 def _remember(m):
     o=_origin(m)
     if not o or not m.from_user:return
