@@ -53,9 +53,17 @@ async def fixed_direct_start(bot, m):
     try:
         data = json.loads(raw)
         if kind == "direct:":
-            items = [(int(data["chat_id"]), int(data["message_id"]))]
+            items = [{
+                "chat_id": int(data["chat_id"]),
+                "message_id": int(data["message_id"]),
+                "meta": data.get("meta") or {},
+            }]
         else:
-            items = [(int(x["chat_id"]), int(x["message_id"])) for x in data]
+            items = [{
+                "chat_id": int(x["chat_id"]),
+                "message_id": int(x["message_id"]),
+                "meta": x.get("meta") or {},
+            } for x in data]
         if not items:
             raise ValueError("This direct batch contains no messages.")
         await enhancements._deliver_direct(bot, int(m.from_user.id), items)
