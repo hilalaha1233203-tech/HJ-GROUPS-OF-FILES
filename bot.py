@@ -60,11 +60,22 @@ async def make_batch(bot,m,items):
 @Bot.on_message(filters.private & filters.command("batch"),group=-1)
 async def batch(bot,m):
     if len(m.command)>=3:
-        try:a,b=int(m.command[1]),int(m.command[2])
-        except ValueError: await m.reply_text("❌ Message IDs must be numbers."); return
-        r=_state(m.from_user.id)["recent"]; c=_origin(m.reply_to_message)[0] if _origin(m.reply_to_message) else (r[-1]["source_chat_id"] if r else None)
-        if c is None: await m.reply_text("📎 Forward one source message first."); return
-        lo,hi=sorted((a,b)); status=await m.reply_text(f"⏳ Creating one batch link for `{hi-lo+1}` messages..."); await save_batch_media_in_channel(bot,status,list(range(lo,hi+1)),int(c),int(m.from_user.id)); _clear(m.from_user.id); return
+        try:
+            a,b=int(m.command[1]),int(m.command[2])
+        except ValueError:
+            await m.reply_text("❌ Message IDs must be numbers.")
+            raise StopPropagation
+        recent=_state(m.from_user.id)["recent"]
+        origin=_origin(m.reply_to_message)
+        c=origin[0] if origin else (recent[-1]["source_chat_id"] if recent else None)
+        if c is None:
+            await m.reply_text("📎 Forward one source message first.")
+            raise StopPropagation
+        lo,hi=sorted((a,b))
+        status=await m.reply_text(f"⏳ Creating one batch link for `{hi-lo+1}` messages...")
+        await save_batch_media_in_channel(bot,status,list(range(lo,hi+1)),int(c),int(m.from_user.id))
+        _clear(m.from_user.id)
+        raise StopPropagation
     await make_batch(bot,m,_latest(m.from_user.id))
 @Bot.on_message(filters.private & filters.command("custom_batch"),group=-1)
 async def custom_batch(bot,m):
