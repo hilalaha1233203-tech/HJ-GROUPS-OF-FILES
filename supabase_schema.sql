@@ -76,3 +76,10 @@ create table if not exists public.bot_auto_delete_queue (
 create index if not exists bot_auto_delete_queue_due_idx
     on public.bot_auto_delete_queue (status, delete_at);
 alter table public.bot_auto_delete_queue enable row level security;
+drop policy if exists "deny_public_auto_delete_queue" on public.bot_auto_delete_queue;
+create policy "deny_public_auto_delete_queue"
+    on public.bot_auto_delete_queue
+    for all
+    to anon, authenticated
+    using (false)
+    with check (false);
