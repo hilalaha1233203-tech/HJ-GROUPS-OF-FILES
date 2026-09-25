@@ -250,10 +250,54 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
 send_file.media_forward=enhanced_media_forward
 
 def _link(prefix,value): return f"https://telegram.me/{Config.BOT_USERNAME}?start={prefix}{base64.urlsafe_b64encode(value.encode()).decode().rstrip('=')}"
-async def _direct_single(chat_id,mid):
-    t=secrets.token_urlsafe(12); await _set(f"direct:{t}",json.dumps({"chat_id":int(chat_id),"message_id":int(mid)},separators=(",",":"))); return _link("HJDirect_",t)
+
+def _direct_meta(message):
+    if message is None:
+        return {}
+    try:
+        name, size = send_file._file_meta(message)
+    except Exception:
+        name, size = "Telegram Media", None
+    return {
+        "file_name": name or "Telegram Media",
+        "file_size": send_file.human_size(size),
+        "original_caption": str(getattr(message, "caption", None) or getattr(message, "text", None) or "").strip(),
+    }
+
+async def _direct_single(chat_id,mid,metadata=None):
+    t=secrets.token_urlsafe(12)
+    data={"chat_id":int(chat_id),"message_id":int(mid),"meta":metadata or {}}
+    await _set(f"direct:{t}",json.dumps(data,separators=(",",":")))
+    return _link("HJDirect_",t)
+
 async def _direct_batch(items):
-    t=secrets.token_urlsafe(12); await _set(f"direct_batch:{t}",json.dumps([{"chat_id":int(c),"message_id":int(m)} for c,m in items],separators=(",",":"))); return _link("HJDirectBatch_",t)
+    t=secrets.token_urlsafe(12)
+    rows=[]
+    for item in items:
+        if isinstance(item, dict):
+            rows.append({"chat_id":int(item["chat_id"]),"message_id":int(item["message_id"]),"meta":item.get("meta") or {}})
+        else:
+            c,m=item
+            rows.append({"chat_id":int(c),"message_id":int(m),"meta":{}})
+    await _set(f"direct_batch:{t}",json.dumps(rows,separators=(",",":")))
+    return _link("HJDirectBatch_",t)
+
+def _render_caption_from_meta(template, meta):
+    if not template or not meta:
+        return None
+    html_mode = _caption_parse_mode(template) == "HTML"
+    values = {
+        "file_name": meta.get("file_name") or "Telegram Media",
+        "file_size": meta.get("file_size") or "Unknown",
+        "caption": meta.get("original_caption") or "",
+        "username": meta.get("username") or "",
+        "user_id": str(meta.get("user_id") or ""),
+        "first_name": meta.get("first_name") or "",
+    }
+    for key, value in values.items():
+        value = html.escape(str(value), quote=False) if html_mode else str(value)
+        template = template.replace("{" + key + "}", value)
+    return template[:1024]
 async def _origin(message):
     if not message:return None
     o=getattr(message,"forward_origin",None)
@@ -264,7 +308,7 @@ async def _origin(message):
 async def enhanced_save_single(bot,editable,message):
     requester=int(editable.from_user.id) if editable.from_user else 0; origin=await _origin(message)
     if requester==OWNER and origin:
-        link=await _direct_single(*origin); await editable.edit(f"**Direct Channel Link Generated!**\n\n{await shorten(link)}\n\nThe source file was not copied to the Database Channel.",disable_web_page_preview=True); return
+        link=await _direct_single(*origin, _direct_meta(message)); await editable.edit(f"**Direct Channel Link Generated!**\n\n{await shorten(link)}\n\nThe source file was not copied to the Database Channel.",disable_web_page_preview=True); return
     try:
         channel_id=await db.get_db_channel_id()
         if channel_id is None: raise RuntimeError("Storage channel is not configured.")
@@ -307,7 +351,17 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
     requester=int(request_user_id or (editable.from_user.id if editable.from_user else 0))
     if requester==OWNER and source_chat_id is not None:
         if len(message_ids)>1001: await editable.edit("❌ Direct batch cannot exceed 1001 messages."); return
-        link=await _direct_batch([(int(source_chat_id),int(mid)) for mid in message_ids]); await editable.edit(f"**Direct Channel Batch Link Generated!**\n\n{await shorten(link)}\n\nTotal Messages: `{len(message_ids)}`\nNo files were copied to the Database Channel.",disable_web_page_preview=True); return
+        direct_items=[]
+        try:
+            fetched=await bot.get_messages(int(source_chat_id), [int(mid) for mid in message_ids])
+            fetched_list=fetched if isinstance(fetched,list) else ([fetched] if fetched else [])
+            by_id={int(getattr(x,"id",0)): x for x in fetched_list}
+        except Exception:
+            by_id={}
+        for mid in message_ids:
+            src=by_id.get(int(mid))
+            direct_items.append({"chat_id":int(source_chat_id),"message_id":int(mid),"meta":_direct_meta(src)})
+        link=await _direct_batch(direct_items); await editable.edit(f"**Direct Channel Batch Link Generated!**\n\n{await shorten(link)}\n\nTotal Messages: `{len(message_ids)}`\nNo files were copied to the Database Channel.",disable_web_page_preview=True); return
     try:
         channel_id=await db.get_db_channel_id(); source_chat_id=int(source_chat_id or editable.chat.id)
         if channel_id is None: raise RuntimeError("Storage channel is not configured.")
@@ -521,9 +575,15 @@ async def _deliver_direct(bot,user_id,items):
     markup={"inline_keyboard":rows} if rows else None
 
     total=len(items)
-    for index,(chat_id,mid) in enumerate(items, start=1):
-        chat_id=int(chat_id)
-        mid=int(mid)
+    for index,item in enumerate(items, start=1):
+        if isinstance(item, dict):
+            chat_id=int(item["chat_id"])
+            mid=int(item["message_id"])
+            item_meta=item.get("meta") or {}
+        else:
+            chat_id=int(item[0])
+            mid=int(item[1])
+            item_meta={}
         try:
             api_kwargs={
                 "chat_id":int(user_id),
@@ -539,7 +599,7 @@ async def _deliver_direct(bot,user_id,items):
                 ids.append(int(sid))
 
             if template and sid is not None:
-                rendered=_caption_text(sent,template)
+                rendered=_render_caption_from_meta(template,item_meta) or _caption_text(sent,template)
                 if rendered:
                     try:
                         await api_edit_message_caption(
