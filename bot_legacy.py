@@ -12,7 +12,7 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQ
 from configs import Config
 from handlers.database import db
 from handlers.add_user_to_db import add_user_to_database
-from handlers.send_file import send_media_and_reply
+from handlers.send_file import send_media_and_reply, schedule_persistent_delete, auto_delete_worker
 from handlers.helpers import b64_to_str, str_to_b64
 from handlers.check_user_status import handle_user_status
 from handlers.broadcast_handlers import main_broadcast_handler
@@ -26,31 +26,9 @@ from handlers.telegram_api import (
 
 MediaList = {}
 
-_API_DELETE_TASKS = set()
-
-
-def _track_api_delete_task(task):
-    _API_DELETE_TASKS.add(task)
-    task.add_done_callback(_API_DELETE_TASKS.discard)
-
-
-async def _delete_api_messages(chat_id, message_ids, delay):
-    try:
-        await asyncio.sleep(delay)
-        for message_id in message_ids:
-            try:
-                await api_delete_message(chat_id, int(message_id))
-            except Exception as err:
-                print(f"[AUTO_DELETE_API] Failed chat={chat_id} message={message_id}: {err}")
-    except Exception as err:
-        print(f"[AUTO_DELETE_API] Timer failed: {err}")
-
-
-def _schedule_api_delete(chat_id, message_ids, delay):
-    if delay <= 0:
-        return
-    task = asyncio.create_task(_delete_api_messages(chat_id, message_ids, delay))
-    _track_api_delete_task(task)
+async def _schedule_api_delete(chat_id, message_ids, delay):
+    if int(delay) > 0:
+        await schedule_persistent_delete(chat_id, message_ids, delay)
 
 
 # Do not let the generic private media/text handler intercept commands.
@@ -251,7 +229,7 @@ async def start(bot: Client, cmd: Message):
                         )
                         if notice and notice.get("message_id"):
                             delivered_ids.append(notice["message_id"])
-                        _schedule_api_delete(cmd.from_user.id, delivered_ids, delay)
+                        await _schedule_api_delete(cmd.from_user.id, delivered_ids, delay)
                         return
 
                 delivered_id = (index_copy or {}).get("message_id")
@@ -267,7 +245,7 @@ async def start(bot: Client, cmd: Message):
                 delete_ids = [delivered_id]
                 if notice and notice.get("message_id"):
                     delete_ids.append(notice["message_id"])
-                _schedule_api_delete(cmd.from_user.id, delete_ids, delay)
+                await _schedule_api_delete(cmd.from_user.id, delete_ids, delay)
                 return
             except Exception:
                 raise peer_error
@@ -954,11 +932,17 @@ async def setup_bot_commands():
 
 async def run_bot():
     await Bot.start()
+    auto_delete_task = asyncio.create_task(auto_delete_worker(Bot))
     await validate_db_channel_access()
     await recover_storage_channels()
     await setup_bot_commands()
     print(f"[{Config.BOT_USERNAME}] Bot started successfully")
     await idle()
+    auto_delete_task.cancel()
+    try:
+        await auto_delete_task
+    except asyncio.CancelledError:
+        pass
     await Bot.stop()
 
 
