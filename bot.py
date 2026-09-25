@@ -94,7 +94,11 @@ async def special(bot,m): await make_batch(bot,m,_latest(m.from_user.id))
 @Bot.on_message(filters.private & filters.command("universal_link"),group=-1)
 async def universal(bot,m): await make_batch(bot,m,_latest(m.from_user.id))
 @Bot.on_message(filters.private & filters.command("clear_batch"),group=-1)
-async def clear(_,m): _clear(m.from_user.id); bot_legacy.MediaList[str(m.from_user.id)]=[]; await m.reply_text("✅ Cleared your batch selection successfully!")
+async def clear(_,m):
+    _clear(m.from_user.id)
+    bot_legacy.MediaList[str(m.from_user.id)]=[]
+    await m.reply_text("✅ Cleared your batch selection successfully!")
+    raise StopPropagation
 async def setup_bot_commands():
     commands = [
         BotCommand("start","Start / open file links"),
