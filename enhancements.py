@@ -418,6 +418,7 @@ async def _deliver_direct(bot,user_id,items):
             api_kwargs["caption"]=caption
         if cap_mode:
             api_kwargs["parse_mode"]="HTML"
+        await send_file._acquire_delivery_slot(user_id)
         sent=await api_copy_message(**api_kwargs)
         sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
         if sid: ids.append(int(sid))
