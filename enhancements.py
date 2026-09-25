@@ -1,6 +1,7 @@
 # HJ GROUPS STORE KEEPER - dynamic settings, captions/buttons and owner-direct links
 import asyncio
 import base64
+import html
 import json
 import re
 import secrets
@@ -75,15 +76,27 @@ def _buttons_markup():
         if u: rows.append([InlineKeyboardButton(l,url=u)])
     return InlineKeyboardMarkup(rows) if rows else None
 
+def _caption_parse_mode(template):
+    if not template:
+        return None
+    if re.search(r"<\/?(?:b|strong|i|em|u|s|strike|del|code|pre|a|tg-spoiler|blockquote)(?:\s[^>]*|)>", str(template), flags=re.I):
+        return "HTML"
+    return None
+
 def _caption_text(message, template):
     if not template: return None
     try: name,size=send_file._file_meta(message); size=send_file.human_size(size)
     except Exception: name,size="Telegram Media","Unknown"
     original=str(getattr(message,"caption",None) or getattr(message,"text",None) or "").strip(); user=getattr(message,"from_user",None)
+    html_mode=_caption_parse_mode(template) == "HTML"
     vals={"file_name":name or "Telegram Media","file_size":size,"caption":original,"username":getattr(user,"username","") if user else "","user_id":str(getattr(user,"id","") or "") if user else "","first_name":getattr(user,"first_name","") if user else ""}
-    for k,v in vals.items(): template=template.replace("{"+k+"}",str(v))
+    for k,v in vals.items():
+        value = html.escape(str(v), quote=False) if html_mode else str(v)
+        template=template.replace("{"+k+"}",value)
     return template[:1024]
-async def _caption(message): return _caption_text(message, await _get("custom_caption", ""))
+
+async def _caption(message):
+    return _caption_text(message, await _get("custom_caption", ""))
 
 async def _ensure_peer(bot, chat_id):
     """Validate a channel without using the bot-forbidden get_dialogs() API.
@@ -111,17 +124,26 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
     if channel_id is None: raise RuntimeError("Storage channel is not configured.")
     try: source=await bot.get_messages(channel_id,file_id)
     except Exception: source=None
-    cap=await _caption(source) if source else None
+    template=await _get("custom_caption","")
+    cap=_caption_text(source,template) if source else None
+    cap_mode=_caption_parse_mode(template) if cap else None
     try:
         await send_file._acquire_delivery_slot(user_id)
-        return await bot.copy_message(chat_id=user_id,from_chat_id=channel_id,message_id=file_id,caption=cap,protect_content=await db.get_protect_content(),reply_markup=_buttons_markup())
+        kwargs={"chat_id":user_id,"from_chat_id":channel_id,"message_id":file_id,"caption":cap,"protect_content":await db.get_protect_content(),"reply_markup":_buttons_markup()}
+        if cap_mode: kwargs["parse_mode"]=__import__("pyrogram").enums.ParseMode.HTML
+        return await bot.copy_message(**kwargs)
     except Exception as exc:
         from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
         await send_file._acquire_delivery_slot(user_id)
-        copied=await copy_message(chat_id=user_id,from_chat_id=channel_id,message_id=file_id,protect_content=await db.get_protect_content())
+        api_kwargs={"chat_id":user_id,"from_chat_id":channel_id,"message_id":file_id,"protect_content":await db.get_protect_content()}
+        if cap is not None:
+            api_kwargs["caption"]=cap
+        if cap_mode:
+            api_kwargs["parse_mode"]="HTML"
+        copied=await copy_message(**api_kwargs)
         cid=copied.get("message_id") if isinstance(copied,dict) else getattr(copied,"id",None)
         if cid and cap:
-            try: await edit_message_caption(user_id,cid,cap)
+            try: await edit_message_caption(user_id,cid,cap,parse_mode=cap_mode)
             except Exception: pass
         kb={"inline_keyboard":[[{"text":l,"url":_url(BUTTON_CACHE.get(k))}] for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")) if _url(BUTTON_CACHE.get(k))]}
         if cid and kb["inline_keyboard"]:
@@ -149,9 +171,14 @@ async def enhanced_save_single(bot,editable,message):
     try:
         channel_id=await db.get_db_channel_id()
         if channel_id is None: raise RuntimeError("Storage channel is not configured.")
-        caption = await _caption(message)
+        template=await _get("custom_caption","")
+        caption = _caption_text(message, template)
+        caption_mode = _caption_parse_mode(template) if caption else None
         try:
-            sent=await bot.copy_message(chat_id=channel_id,from_chat_id=message.chat.id,message_id=message.id,caption=caption,protect_content=await db.get_protect_content(),reply_markup=_buttons_markup())
+            copy_kwargs={"chat_id":channel_id,"from_chat_id":message.chat.id,"message_id":message.id,"caption":caption,"protect_content":await db.get_protect_content(),"reply_markup":_buttons_markup()}
+            if caption_mode:
+                copy_kwargs["parse_mode"]=__import__("pyrogram").enums.ParseMode.HTML
+            sent=await bot.copy_message(**copy_kwargs)
         except Exception as pyrogram_error:
             api_markup=None
             rows=[]
@@ -167,6 +194,7 @@ async def enhanced_save_single(bot,editable,message):
                     protect_content=await db.get_protect_content(),
                     caption=caption,
                     reply_markup=api_markup,
+                    parse_mode=caption_mode,
                 )
             except Exception as api_error:
                 raise RuntimeError(
@@ -233,7 +261,7 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
                 cap=await _caption(src) if src else None
                 if cap is not None:
                     try:
-                        await api_edit_message_caption(channel_id, stored_id, cap)
+                        await api_edit_message_caption(channel_id, stored_id, cap, parse_mode=_caption_parse_mode(await _get("custom_caption","")))
                     except Exception:
                         pass
                 if markup_json:
