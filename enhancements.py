@@ -390,7 +390,7 @@ async def _deliver_direct(bot,user_id,items):
         if sid: ids.append(int(sid))
     delay=await db.get_auto_delete_seconds()
     if delay>0 and ids:
-        notice=await send_file.send_delete_notice(bot,user_id,delay); nid=getattr(notice,"id",None) if notice else None; delete_ids=ids+([int(nid)] if nid else []); task=asyncio.create_task(send_file._delete_delivered_messages(bot,user_id,delete_ids,delay)); send_file._track_delete_task(task)
+        notice=await send_file.send_delete_notice(bot,user_id,delay); nid=getattr(notice,"id",None) if notice else None; delete_ids=ids+([int(nid)] if nid else []); await send_file.schedule_persistent_delete(user_id,delete_ids,delay)
 
 _original_run_bot=bot_legacy.run_bot
 async def _run_bot_enhanced():
