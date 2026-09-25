@@ -36,7 +36,8 @@ FILESTORE_COMMANDS = [
     "start", "genlink", "batch", "custom_batch", "shortener",
     "settings", "clear_batch", "special_link", "universal_link",
     "broadcast", "ban", "unban", "status", "ban_user",
-    "unban_user", "banned_users",
+    "unban_user", "banned_users", "direct", "direct_batch",
+    "caption_replace", "set_caption", "set_thumbnail",
 ]
 
 Bot = Client(
@@ -75,14 +76,37 @@ def parse_db_message_link(text: str):
     return None
 
 
-async def resolve_existing_db_message(bot: Client, message: Message):
-    """Resolve an already-stored DB-channel message from a forwarded message or Telegram link."""
+def _forwarded_origin(message):
+    origin = getattr(message, "forward_origin", None)
+    if origin is not None:
+        chat = getattr(origin, "chat", None)
+        message_id = getattr(origin, "message_id", None)
+        if chat is not None and message_id:
+            return int(chat.id), int(message_id)
+
     forwarded_chat = getattr(message, "forward_from_chat", None)
     forwarded_message_id = getattr(message, "forward_from_message_id", None)
+    if forwarded_chat is not None and forwarded_message_id:
+        return int(forwarded_chat.id), int(forwarded_message_id)
+    return None
+
+
+def _is_forwarded_message(message):
+    return bool(
+        getattr(message, "forward_origin", None)
+        or getattr(message, "forward_from_chat", None)
+        or getattr(message, "forward_from", None)
+        or getattr(message, "forward_date", None)
+    )
+
+
+async def resolve_existing_db_message(bot: Client, message: Message):
+    """Resolve an already-stored DB-channel message from a forwarded message or Telegram link."""
+    origin = _forwarded_origin(message)
     db_channel_id = await db.get_db_channel_id()
 
-    if forwarded_chat is not None and forwarded_message_id:
-        source_channel_id = int(forwarded_chat.id)
+    if origin:
+        source_channel_id, forwarded_message_id = origin
         if db_channel_id is None:
             if int(message.from_user.id) != int(Config.BOT_OWNER):
                 return None
