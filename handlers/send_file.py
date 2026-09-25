@@ -12,6 +12,28 @@ from handlers.telegram_api import copy_message as api_copy_message, edit_message
 _DELETE_TASKS = set()
 _BATCH_DELETE_CONTEXTS = {}
 
+# Telegram documents a practical free broadcast ceiling of about 30 messages/sec.
+# Keep media delivery below that ceiling so many simultaneous /start requests
+# queue locally instead of creating a burst of 429 responses.
+_DELIVERY_RATE_LIMIT = 25
+_DELIVERY_RATE_WINDOW = 1.0
+_DELIVERY_RATE_LOCK = asyncio.Lock()
+_DELIVERY_TIMESTAMPS = []
+
+
+async def _acquire_delivery_slot():
+    while True:
+        async with _DELIVERY_RATE_LOCK:
+            now = asyncio.get_running_loop().time()
+            cutoff = now - _DELIVERY_RATE_WINDOW
+            while _DELIVERY_TIMESTAMPS and _DELIVERY_TIMESTAMPS[0] <= cutoff:
+                _DELIVERY_TIMESTAMPS.pop(0)
+            if len(_DELIVERY_TIMESTAMPS) < _DELIVERY_RATE_LIMIT:
+                _DELIVERY_TIMESTAMPS.append(now)
+                return
+            wait_for = max(0.01, _DELIVERY_TIMESTAMPS[0] + _DELIVERY_RATE_WINDOW - now)
+        await asyncio.sleep(wait_for)
+
 
 def human_size(size):
     try:
@@ -133,6 +155,7 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
     reply_markup = build_channel_buttons()
 
     try:
+        await _acquire_delivery_slot()
         return await bot.copy_message(
             chat_id=user_id,
             from_chat_id=channel_id,
