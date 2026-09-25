@@ -10,17 +10,53 @@ from configs import Config
 _API_BASE = f"https://api.telegram.org/bot{Config.BOT_TOKEN}"
 
 
-def _call(method: str, payload: dict):
-    response = requests.post(
-        f"{_API_BASE}/{method}",
-        json=payload,
-        timeout=25,
-    )
-    response.raise_for_status()
-    data = response.json()
-    if not data.get("ok"):
+def _call(method: str, payload: dict, max_retries: int = 5):
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                f"{_API_BASE}/{method}",
+                json=payload,
+                timeout=25,
+            )
+            data = response.json()
+        except (requests.RequestException, ValueError):
+            if attempt >= max_retries:
+                raise
+            continue
+
+        if data.get("ok"):
+            return data.get("result")
+
+        retry_after = (data.get("parameters") or {}).get("retry_after")
+        if retry_after is not None and attempt < max_retries:
+            import time
+            time.sleep(max(1, int(retry_after)))
+            continue
+
         raise RuntimeError(data.get("description") or f"Telegram Bot API error in {method}")
-    return data.get("result")
+
+
+async def copy_messages(
+    chat_id: int,
+    from_chat_id: int,
+    message_ids,
+    protect_content: bool = False,
+):
+    ids = sorted({int(message_id) for message_id in message_ids})
+    if not ids:
+        return []
+    if len(ids) > 100:
+        raise ValueError("copy_messages accepts at most 100 message IDs per Telegram Bot API call.")
+    return await asyncio.to_thread(
+        _call,
+        "copyMessages",
+        {
+            "chat_id": int(chat_id),
+            "from_chat_id": int(from_chat_id),
+            "message_ids": ids,
+            "protect_content": bool(protect_content),
+        },
+    )
 
 
 async def copy_message(
