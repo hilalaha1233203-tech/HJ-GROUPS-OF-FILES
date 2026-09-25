@@ -90,6 +90,7 @@ async def copy_message(
     protect_content: bool = False,
     caption=None,
     reply_markup=None,
+    parse_mode=None,
 ):
     payload = {
         "chat_id": int(chat_id),
@@ -101,19 +102,20 @@ async def copy_message(
         payload["caption"] = str(caption)
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = str(parse_mode)
     return await asyncio.to_thread(_call, "copyMessage", payload)
 
 
-async def edit_message_caption(chat_id: int, message_id: int, caption: str):
-    return await asyncio.to_thread(
-        _call,
-        "editMessageCaption",
-        {
-            "chat_id": int(chat_id),
-            "message_id": int(message_id),
-            "caption": str(caption),
-        },
-    )
+async def edit_message_caption(chat_id: int, message_id: int, caption: str, parse_mode=None):
+    payload = {
+        "chat_id": int(chat_id),
+        "message_id": int(message_id),
+        "caption": str(caption),
+    }
+    if parse_mode:
+        payload["parse_mode"] = str(parse_mode)
+    return await asyncio.to_thread(_call, "editMessageCaption", payload)
 
 
 async def edit_message_reply_markup(chat_id: int, message_id: int, reply_markup: dict):
