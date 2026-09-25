@@ -219,7 +219,7 @@ async def schedule_persistent_delete(chat_id: int, message_ids, delay: int):
 async def _process_auto_delete_job(bot, job):
     from handlers.telegram_api import delete_messages as api_delete_messages
     job_id = int(job["id"])
-    if not await db.mark_auto_delete_processing(job_id):
+    if not await db.mark_auto_delete_processing(job_id, int(job.get("attempts") or 0)):
         return False
     try:
         ids = []
@@ -259,15 +259,12 @@ async def _process_auto_delete_job(bot, job):
         print(f"[AUTO_DELETE] Completed job={job_id} chat={job['chat_id']} messages={len(ids)}")
         return True
     except FloodWait as exc:
-        await asyncio.sleep(int(exc.value))
-        try:
-            await _acquire_delivery_slot(int(job["chat_id"]))
-            await api_delete_messages(int(job["chat_id"]), ids[:100])
-            await db.complete_auto_delete(job_id)
-            return True
-        except Exception as retry_error:
-            await db.retry_auto_delete(job_id, retry_error, 60)
-            return False
+        # Retry the whole durable job instead of completing after only one
+        # chunk. Telegram skips IDs that are already gone, so retrying is safe.
+        retry_delay = max(60, int(exc.value))
+        await db.retry_auto_delete(job_id, exc, retry_delay)
+        print(f"[AUTO_DELETE] Job={job_id} FloodWait; retry in {retry_delay}s")
+        return False
     except Exception as exc:
         attempts = int(job.get("attempts") or 0)
         retry_delay = min(3600, max(30, 30 * (2 ** min(attempts, 5))))
@@ -337,11 +334,15 @@ def _legacy_batch_context():
 async def _send_batch_delete_notice_once(bot, user_id: int, delivered_ids, delay: int):
     if delay <= 0:
         return
-    notice = await send_delete_notice(bot, user_id, delay)
-    if notice is not None:
-        notice_id = getattr(notice, "id", None) if not isinstance(notice, dict) else notice.get("message_id")
-        if notice_id:
-            delivered_ids.append(int(notice_id))
+    try:
+        notice = await send_delete_notice(bot, user_id, delay)
+        if notice is not None:
+            notice_id = getattr(notice, "id", None) if not isinstance(notice, dict) else notice.get("message_id")
+            if notice_id:
+                delivered_ids.append(int(notice_id))
+    except Exception as notice_error:
+        # Keep the durable delete schedule even if the notice cannot be sent.
+        print(f"[AUTO_DELETE] Batch notice failed for user={user_id}: {notice_error}")
     await schedule_persistent_delete(user_id, delivered_ids, delay)
 
 
@@ -385,9 +386,15 @@ async def send_media_and_reply(
         return delivered
 
     if show_notice:
-        notice = await send_delete_notice(bot, user_id, delay)
-        if notice is not None:
-            message_ids.append(getattr(notice, "id", None))
+        try:
+            notice = await send_delete_notice(bot, user_id, delay)
+            if notice is not None:
+                notice_id = getattr(notice, "id", None)
+                if notice_id:
+                    message_ids.append(int(notice_id))
+        except Exception as notice_error:
+            # A notice failure must not leave delivered media without deletion.
+            print(f"[AUTO_DELETE] Notice failed for user={user_id}: {notice_error}")
 
     if schedule_delete and delay > 0:
         await schedule_persistent_delete(user_id, message_ids, delay)
