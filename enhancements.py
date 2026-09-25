@@ -202,6 +202,19 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
                     )
                 except Exception:
                     pass
+
+        # Telegram caption edits can replace/clear the inline keyboard when
+        # reply_markup is not included. Re-apply the configured buttons after
+        # every caption repair so batch/direct deliveries keep them permanently.
+        if sent is not None:
+            try:
+                await api_edit_message_reply_markup(
+                    user_id,
+                    int(sent.id),
+                    markup_json if markup_json is not None else {"inline_keyboard": []},
+                )
+            except Exception:
+                pass
         return sent
     except Exception:
         from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
@@ -240,6 +253,8 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
                 except Exception:
                     pass
 
+        # Re-apply the keyboard after caption repair as a second defensive
+        # layer for Bot API fallback deliveries.
         if cid:
             buttons = build_channel_buttons_json() or {"inline_keyboard": []}
             try:
