@@ -431,7 +431,10 @@ async def _deliver_direct(bot,user_id,items):
             if nid: delete_ids.append(int(nid))
         except Exception as notice_error:
             print(f"[AUTO_DELETE] Enhanced notice failed for user={user_id}: {notice_error}")
-        await send_file.schedule_persistent_delete(user_id,delete_ids,delay)
+        try:
+            await send_file.schedule_persistent_delete(user_id,delete_ids,delay)
+        except Exception as delete_error:
+            print(f"[AUTO_DELETE] Direct delivery schedule failed for user={user_id}: {delete_error}")
 
 _original_run_bot=bot_legacy.run_bot
 async def _run_bot_enhanced():
