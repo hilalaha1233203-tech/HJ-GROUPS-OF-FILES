@@ -163,6 +163,14 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
 
     protect = await db.get_protect_content()
     markup = _buttons_markup()
+    markup_json = None
+    if markup and getattr(markup, "inline_keyboard", None):
+        markup_json = {
+            "inline_keyboard": [
+                [{"text": btn.text, "url": btn.url} for btn in row]
+                for row in markup.inline_keyboard
+            ]
+        }
 
     try:
         await send_file._acquire_delivery_slot(user_id)
