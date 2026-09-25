@@ -11,7 +11,13 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import bot_legacy
 from configs import Config
 from handlers.database import db
-from handlers.telegram_api import copy_message as api_copy_message, copy_messages as api_copy_messages
+from handlers.telegram_api import (
+    copy_message as api_copy_message,
+    copy_messages as api_copy_messages,
+    edit_message_caption as api_edit_message_caption,
+    edit_message_reply_markup as api_edit_message_reply_markup,
+    send_message as api_send_message,
+)
 from handlers import save_media, send_file
 Bot = bot_legacy.Bot
 OWNER = int(Config.BOT_OWNER or 0)
@@ -193,11 +199,13 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
             await editable.edit("❌ Batch size is limited to 100 files per link. For production, use 5 files per link."); return
 
         saved=[]
-        api_rows=[]
-        for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
-            u=_url(BUTTON_CACHE.get(k))
-            if u: api_rows.append([{"text":l,"url":u}])
-        api_markup={"inline_keyboard":api_rows} if api_rows else None
+        source_messages=[]
+        try:
+            fetched=await bot.get_messages(source_chat_id, normalized_ids)
+            source_messages=fetched if isinstance(fetched,list) else ([fetched] if fetched else [])
+        except Exception:
+            source_messages=[]
+
         copied_ids=await api_copy_messages(
             chat_id=channel_id,
             from_chat_id=source_chat_id,
@@ -207,6 +215,32 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
         for item in copied_ids or []:
             sid=item.get("message_id") if isinstance(item,dict) else getattr(item,"message_id",None)
             if sid is not None: saved.append(int(sid))
+
+        # copyMessages is the fast storage path. If every requested message was
+        # copied and Pyrogram could read the source metadata, restore the same
+        # custom caption/buttons that the old per-message path applied.
+        if len(saved)==len(normalized_ids) and len(source_messages)==len(normalized_ids):
+            source_by_id={int(getattr(msg,"id",0)): msg for msg in source_messages}
+            markup=_buttons_markup()
+            markup_json=None
+            if markup and getattr(markup,"inline_keyboard",None):
+                markup_json={"inline_keyboard":[
+                    [{"text":btn.text,"url":btn.url} for btn in row]
+                    for row in markup.inline_keyboard
+                ]}
+            for source_id, stored_id in zip(normalized_ids, saved):
+                src=source_by_id.get(int(source_id))
+                cap=await _caption(src) if src else None
+                if cap is not None:
+                    try:
+                        await api_edit_message_caption(channel_id, stored_id, cap)
+                    except Exception:
+                        pass
+                if markup_json:
+                    try:
+                        await api_edit_message_reply_markup(channel_id, stored_id, markup_json)
+                    except Exception:
+                        pass
         if not saved: raise RuntimeError("No files were available to save in this batch.")
         try:
             idx=await bot.send_message(channel_id," ".join(map(str,saved)),disable_web_page_preview=True)
