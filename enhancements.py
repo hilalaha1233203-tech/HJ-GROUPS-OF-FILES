@@ -313,6 +313,7 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
             await editable.edit("❌ Batch size is limited to 100 files per link. For production, use 5 files per link."); return
 
         saved=[]
+        copied_items=[]
         source_messages=[]
         try:
             fetched=await bot.get_messages(source_chat_id, normalized_ids)
@@ -320,34 +321,46 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
         except Exception:
             source_messages=[]
 
-        copied_ids=await api_copy_messages(
+        copied_items=await api_copy_messages(
             chat_id=channel_id,
             from_chat_id=source_chat_id,
             message_ids=normalized_ids,
             protect_content=await db.get_protect_content(),
         )
-        for item in copied_ids or []:
+        for item in copied_items or []:
             sid=item.get("message_id") if isinstance(item,dict) else getattr(item,"message_id",None)
-            if sid is not None: saved.append(int(sid))
+            if sid is not None:
+                saved.append(int(sid))
 
-        # copyMessages is the fast storage path. If every requested message was
-        # copied and Pyrogram could read the source metadata, restore the same
-        # custom caption/buttons that the old per-message path applied.
-        if len(saved)==len(normalized_ids) and len(source_messages)==len(normalized_ids):
-            source_by_id={int(getattr(msg,"id",0)): msg for msg in source_messages}
-            markup=_buttons_markup()
-            markup_json=None
-            if markup and getattr(markup,"inline_keyboard",None):
-                markup_json={"inline_keyboard":[
-                    [{"text":btn.text,"url":btn.url} for btn in row]
-                    for row in markup.inline_keyboard
-                ]}
-            for source_id, stored_id in zip(normalized_ids, saved):
+        # Always use the Bot API returned Message objects as a metadata fallback.
+        # This keeps custom captions working even when Pyrogram cannot hydrate a
+        # private source-channel peer after a restart/deployment.
+        template=await _get("custom_caption","")
+        caption_mode=_caption_parse_mode(template) if template else None
+        source_by_id={int(getattr(msg,"id",0)): msg for msg in source_messages}
+        markup=_buttons_markup()
+        markup_json=None
+        if markup and getattr(markup,"inline_keyboard",None):
+            markup_json={"inline_keyboard":[
+                [{"text":btn.text,"url":btn.url} for btn in row]
+                for row in markup.inline_keyboard
+            ]}
+
+        if len(saved)==len(normalized_ids):
+            for index,(source_id, stored_id) in enumerate(zip(normalized_ids, saved)):
                 src=source_by_id.get(int(source_id))
-                cap=await _caption(src) if src else None
+                api_item=copied_items[index] if index < len(copied_items) else None
+                cap=_caption_text(src, template) if src else None
+                if cap is None and api_item is not None:
+                    cap=_caption_text(api_item, template)
                 if cap is not None:
                     try:
-                        await api_edit_message_caption(channel_id, stored_id, cap, parse_mode=_caption_parse_mode(await _get("custom_caption","")))
+                        await api_edit_message_caption(
+                            channel_id,
+                            stored_id,
+                            cap,
+                            parse_mode=caption_mode,
+                        )
                     except Exception:
                         pass
                 if markup_json:
