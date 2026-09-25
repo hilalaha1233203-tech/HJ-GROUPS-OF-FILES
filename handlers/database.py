@@ -290,6 +290,94 @@ class Database:
     async def set_auto_delete_seconds(self, seconds):
         await self._set_setting("auto_delete_seconds", int(seconds))
 
+    async def enqueue_auto_delete(self, chat_id, message_ids, delay_seconds):
+        clean_ids = []
+        for value in message_ids or []:
+            try:
+                mid = int(value)
+            except (TypeError, ValueError):
+                continue
+            if mid > 0 and mid not in clean_ids:
+                clean_ids.append(mid)
+        if not clean_ids or int(delay_seconds) <= 0:
+            return None
+        due_at = (
+            datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=int(delay_seconds))
+        ).isoformat()
+        response = await self._execute(
+            lambda: self.client.table("bot_auto_delete_queue").insert({
+                "chat_id": int(chat_id),
+                "message_ids": clean_ids,
+                "delete_at": due_at,
+                "status": "pending",
+                "attempts": 0,
+                "last_error": "",
+            }).execute(),
+            "enqueue auto-delete",
+        )
+        return (response.data or [None])[0]
+
+    async def get_due_auto_deletes(self, limit=20):
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        response = await self._execute(
+            lambda: self.client.table("bot_auto_delete_queue")
+            .select("*")
+            .in_("status", ["pending", "failed"])
+            .lte("delete_at", now)
+            .order("delete_at")
+            .limit(int(limit))
+            .execute(),
+            "get due auto-deletes",
+        )
+        return response.data or []
+
+    async def mark_auto_delete_processing(self, job_id):
+        response = await self._execute(
+            lambda: self.client.table("bot_auto_delete_queue")
+            .update({
+                "status": "processing",
+                "attempts": 1,
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+            .eq("id", int(job_id))
+            .in_("status", ["pending", "failed"])
+            .execute(),
+            "claim auto-delete",
+        )
+        return bool(response.data)
+
+    async def complete_auto_delete(self, job_id):
+        await self._execute(
+            lambda: self.client.table("bot_auto_delete_queue")
+            .update({
+                "status": "completed",
+                "last_error": "",
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+            .eq("id", int(job_id))
+            .execute(),
+            "complete auto-delete",
+        )
+
+    async def retry_auto_delete(self, job_id, error, delay_seconds=30):
+        due_at = (
+            datetime.datetime.now(datetime.timezone.utc)
+            + datetime.timedelta(seconds=max(5, int(delay_seconds)))
+        ).isoformat()
+        await self._execute(
+            lambda: self.client.table("bot_auto_delete_queue")
+            .update({
+                "status": "failed",
+                "delete_at": due_at,
+                "last_error": str(error)[:2000],
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+            .eq("id", int(job_id))
+            .execute(),
+            "retry auto-delete",
+        )
+
     async def get_protection_settings(self):
         return {
             "protect_forward": str(
