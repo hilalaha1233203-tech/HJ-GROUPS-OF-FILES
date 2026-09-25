@@ -224,9 +224,10 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
                     print(f"[CAPTION] Delivery caption repair failed message={getattr(sent, 'id', None)}: {caption_error}")
                     await _repair_delivery_markup(user_id, int(sent.id), markup_json)
 
-        # Keep the configured keyboard as the final state of the delivered message.
-        if sent is not None:
-            await _repair_delivery_markup(user_id, int(sent.id), markup_json)
+        # copy_message() already received the configured keyboard. If a
+        # caption repair was needed, that edit also carried reply_markup
+        # atomically; the exception path above performs a separate repair.
+        # Avoid an extra Bot API request for every successfully delivered file.
         return sent
     except Exception:
         from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
@@ -274,15 +275,9 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
                     except Exception:
                         pass
 
-        if cid:
-            try:
-                await api_edit_message_reply_markup(
-                    user_id,
-                    int(cid),
-                    markup_json if markup_json is not None else {"inline_keyboard": []},
-                )
-            except Exception:
-                pass
+        # copy_message() already supplied the keyboard. The caption-edit
+        # path above carries the same keyboard atomically; only its exception
+        # path performs a separate repair.
         return copied
 send_file.media_forward=enhanced_media_forward
 
@@ -652,14 +647,10 @@ async def _deliver_direct(bot,user_id,items):
                         )
                     except Exception as caption_error:
                         print("[CAPTION] Direct caption repair failed message=%s: %s" % (mid, caption_error))
-                    try:
-                        await api_edit_message_reply_markup(
-                            int(user_id),
-                            int(sid),
-                            markup if markup is not None else {"inline_keyboard": []},
-                        )
-                    except Exception as button_error:
-                        print("[BUTTONS] Direct keyboard repair failed message=%s: %s" % (mid, button_error))
+                    # editMessageCaption carries the same keyboard atomically.
+                    # If that API call fails, the caption edit itself is retried by
+                    # the outer delivery error handling; do not issue a second
+                    # unconditional API request here.
 
             if total > 100 and index % 100 == 0:
                 print("[DIRECT_BATCH] user=%s delivered=%s/%s" % (user_id,index,total))
