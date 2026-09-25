@@ -40,10 +40,23 @@ async def genlink(bot,m):
     if not target: await m.reply_text("📎 First forward the file/message from your channel to this bot.\n\nThen send `/genlink`."); return
     status=await m.reply_text("⏳ Generating your permanent link..."); await save_media_in_channel(bot,status,target); _clear(m.from_user.id); raise StopPropagation
 async def make_batch(bot,m,items):
-    if len(items)<2: await m.reply_text("📦 Forward the FIRST and LAST messages from the same channel, then send `/batch`."); return
-    a,b=items[-2],items[-1]
-    if a["source_chat_id"]!=b["source_chat_id"]: await m.reply_text("❌ FIRST and LAST messages must be from the same channel."); return
-    lo,hi=sorted((int(a["source_message_id"]),int(b["source_message_id"]))); status=await m.reply_text(f"⏳ Creating one batch link for `{hi-lo+1}` messages..."); await save_batch_media_in_channel(bot,status,list(range(lo,hi+1)),int(a["source_chat_id"]),int(m.from_user.id)); _clear(m.from_user.id)
+    if len(items) < 2:
+        await m.reply_text("📦 Forward the FIRST and LAST messages from the same channel, then send `/batch`.")
+        raise StopPropagation
+    # Use the first and last remembered source messages. If the user forwards
+    # every file before /batch, this still creates the intended full range.
+    a,b=items[0],items[-1]
+    if a["source_chat_id"]!=b["source_chat_id"]:
+        await m.reply_text("❌ FIRST and LAST messages must be from the same channel.")
+        raise StopPropagation
+    lo,hi=sorted((int(a["source_message_id"]),int(b["source_message_id"])))
+    status=await m.reply_text(f"⏳ Creating one batch link for `{hi-lo+1}` messages...")
+    await save_batch_media_in_channel(
+        bot,status,list(range(lo,hi+1)),
+        int(a["source_chat_id"]),int(m.from_user.id)
+    )
+    _clear(m.from_user.id)
+    raise StopPropagation
 @Bot.on_message(filters.private & filters.command("batch"),group=-1)
 async def batch(bot,m):
     if len(m.command)>=3:
