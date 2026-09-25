@@ -63,6 +63,24 @@ def human_size(size):
 def _file_meta(message: Message):
     if message is None:
         return "Telegram Media", None
+    if isinstance(message, dict):
+        media = (
+            message.get("document")
+            or message.get("audio")
+            or message.get("video")
+            or message.get("animation")
+        )
+        if media is not None:
+            return media.get("file_name") or "Telegram Media", media.get("file_size")
+        photo = message.get("photo")
+        if photo:
+            if isinstance(photo, list):
+                photo = photo[-1] if photo else {}
+            return "Photo.jpg", (photo or {}).get("file_size")
+        voice = message.get("voice")
+        if voice:
+            return "Voice Message.ogg", (voice or {}).get("file_size")
+
     media = (
         getattr(message, "document", None)
         or getattr(message, "audio", None)
