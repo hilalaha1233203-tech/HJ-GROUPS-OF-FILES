@@ -347,6 +347,23 @@ class Database:
         )
         return bool(response.data)
 
+    async def recover_stale_auto_deletes(self, stale_seconds=120):
+        cutoff = (
+            datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(seconds=int(stale_seconds))
+        ).isoformat()
+        await self._execute(
+            lambda: self.client.table("bot_auto_delete_queue")
+            .update({
+                "status": "pending",
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+            .eq("status", "processing")
+            .lt("updated_at", cutoff)
+            .execute(),
+            "recover stale auto-deletes",
+        )
+
     async def complete_auto_delete(self, job_id):
         await self._execute(
             lambda: self.client.table("bot_auto_delete_queue")
