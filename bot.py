@@ -2,7 +2,7 @@ import bot_legacy
 import enhancements
 import direct_link_fix
 import handlers.caption_replace
-from pyrogram import filters
+from pyrogram import filters, StopPropagation
 from pyrogram.types import Message, BotCommand, BotCommandScopeAllPrivateChats, InlineKeyboardMarkup, InlineKeyboardButton
 from configs import Config
 from handlers.database import db
@@ -40,7 +40,7 @@ async def _last(bot,m):
 async def genlink(bot,m):
     target=m.reply_to_message or await _last(bot,m)
     if not target: await m.reply_text("📎 First forward the file/message from your channel to this bot.\n\nThen send `/genlink`."); return
-    status=await m.reply_text("⏳ Generating your permanent link..."); await save_media_in_channel(bot,status,target); _clear(m.from_user.id)
+    status=await m.reply_text("⏳ Generating your permanent link..."); await save_media_in_channel(bot,status,target); _clear(m.from_user.id); raise StopPropagation
 async def make_batch(bot,m,items):
     if len(items)<2: await m.reply_text("📦 Forward the FIRST and LAST messages from the same channel, then send `/batch`."); return
     a,b=items[-2],items[-1]
