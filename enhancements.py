@@ -6,7 +6,7 @@ import json
 import re
 import secrets
 import requests
-from pyrogram import filters, StopPropagation
+from pyrogram import filters, StopPropagation, enums
 from pyrogram.errors import PeerIdInvalid
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import bot_legacy
@@ -130,7 +130,7 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
     try:
         await send_file._acquire_delivery_slot(user_id)
         kwargs={"chat_id":user_id,"from_chat_id":channel_id,"message_id":file_id,"caption":cap,"protect_content":await db.get_protect_content(),"reply_markup":_buttons_markup()}
-        if cap_mode: kwargs["parse_mode"]=__import__("pyrogram").enums.ParseMode.HTML
+        if cap_mode: kwargs["parse_mode"]=enums.ParseMode.HTML
         return await bot.copy_message(**kwargs)
     except Exception as exc:
         from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
@@ -177,7 +177,7 @@ async def enhanced_save_single(bot,editable,message):
         try:
             copy_kwargs={"chat_id":channel_id,"from_chat_id":message.chat.id,"message_id":message.id,"caption":caption,"protect_content":await db.get_protect_content(),"reply_markup":_buttons_markup()}
             if caption_mode:
-                copy_kwargs["parse_mode"]=__import__("pyrogram").enums.ParseMode.HTML
+                copy_kwargs["parse_mode"]=enums.ParseMode.HTML
             sent=await bot.copy_message(**copy_kwargs)
         except Exception as pyrogram_error:
             api_markup=None
@@ -406,14 +406,18 @@ async def _deliver_direct(bot,user_id,items):
             u=_url(BUTTON_CACHE.get(k))
             if u: rows.append([{"text":l,"url":u}])
         if rows: markup={"inline_keyboard":rows}
-        sent=await api_copy_message(
-            chat_id=int(user_id),
-            from_chat_id=chat_id,
-            message_id=mid,
-            protect_content=protect,
-            caption=caption,
-            reply_markup=markup,
-        )
+        api_kwargs={
+            "chat_id":int(user_id),
+            "from_chat_id":chat_id,
+            "message_id":mid,
+            "protect_content":protect,
+            "reply_markup":markup,
+        }
+        if caption is not None:
+            api_kwargs["caption"]=caption
+        if cap_mode:
+            api_kwargs["parse_mode"]="HTML"
+        sent=await api_copy_message(**api_kwargs)
         sid=getattr(sent,"id",None) or (sent.get("message_id") if isinstance(sent,dict) else None)
         if sid: ids.append(int(sid))
     delay=await db.get_auto_delete_seconds()
