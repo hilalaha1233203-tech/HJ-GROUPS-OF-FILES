@@ -22,6 +22,8 @@ from handlers.telegram_api import (
     get_chat as api_get_chat,
     delete_message as api_delete_message,
     send_message as api_send_message,
+    edit_message_caption as api_edit_message_caption,
+    edit_message_reply_markup as api_edit_message_reply_markup,
 )
 
 MediaList = {}
