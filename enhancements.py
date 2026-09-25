@@ -561,8 +561,8 @@ async def _deliver_direct(bot,user_id,items):
         raise ValueError("This direct delivery contains no messages.")
 
     checked_chats=set()
-    for chat_id,_ in items:
-        chat_id=int(chat_id)
+    for item in items:
+        chat_id=int(item["chat_id"]) if isinstance(item, dict) else int(item[0])
         if chat_id not in checked_chats:
             await _ensure_peer(bot,chat_id)
             checked_chats.add(chat_id)
