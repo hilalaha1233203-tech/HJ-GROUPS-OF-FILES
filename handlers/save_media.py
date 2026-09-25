@@ -12,6 +12,7 @@ from handlers.helpers import str_to_b64
 from handlers.database import db
 from handlers.telegram_api import (
     copy_message as api_copy_message,
+    copy_messages as api_copy_messages,
     send_message as api_send_message,
 )
 
@@ -41,6 +42,11 @@ def get_short(url):
     except Exception as err:
         print(f"Shortener unavailable, using original link: {err}")
     return url
+
+
+async def get_short_async(url):
+    """Run the synchronous shortener request outside the asyncio event loop."""
+    return await asyncio.to_thread(get_short, url)
 
 
 async def get_storage_channel_id():
@@ -94,18 +100,39 @@ async def save_batch_media_in_channel(
 
         channel_id = await get_storage_channel_id()
         source_chat_id = source_chat_id or editable.chat.id
-        message_ids_str = ""
-        for message_id in message_ids:
-            message = await bot.get_messages(chat_id=source_chat_id, message_ids=message_id)
-            if message is None:
+        normalized_ids = []
+        seen_ids = set()
+        for raw_id in message_ids:
+            try:
+                value = int(raw_id)
+            except (TypeError, ValueError):
                 continue
-            sent_message = await forward_to_channel(bot, message, editable)
-            if sent_message is None:
-                continue
-            saved_id = sent_message.id if hasattr(sent_message, "id") else sent_message.get("message_id")
-            if saved_id:
-                message_ids_str += f"{str(saved_id)} "
-            await asyncio.sleep(2)
+            if value > 0 and value not in seen_ids:
+                normalized_ids.append(value)
+                seen_ids.add(value)
+
+        if not normalized_ids:
+            await editable.edit("No valid message IDs were provided for this batch.")
+            return
+
+        # Telegram supports copying up to 100 messages in one Bot API request.
+        # Do not add a fixed sleep per file: Telegram returns retry_after when
+        # flood control is actually reached, and the API helper handles it.
+        saved_ids = []
+        for offset in range(0, len(normalized_ids), 100):
+            chunk = normalized_ids[offset:offset + 100]
+            copied = await api_copy_messages(
+                chat_id=channel_id,
+                from_chat_id=source_chat_id,
+                message_ids=chunk,
+                protect_content=False,
+            )
+            for item in copied or []:
+                saved_id = item.get("message_id") if isinstance(item, dict) else getattr(item, "message_id", None)
+                if saved_id is not None:
+                    saved_ids.append(int(saved_id))
+
+        message_ids_str = " ".join(str(value) for value in saved_ids)
 
         if not message_ids_str.strip():
             await editable.edit("No files were available to save in this batch.")
@@ -144,7 +171,7 @@ async def save_batch_media_in_channel(
             raise RuntimeError("Storage batch index message ID could not be determined.")
         payload = f"{channel_id}|{save_message_id}"
         share_link = f"https://telegram.me/{Config.BOT_USERNAME}?start=HJGroups_{str_to_b64(payload)}"
-        short_link = get_short(share_link)
+        short_link = await get_short_async(share_link)
         buttons = [[InlineKeyboardButton("Original Link", url=share_link)]]
         if short_link != share_link:
             buttons[0].append(InlineKeyboardButton("Short Link", url=short_link))
