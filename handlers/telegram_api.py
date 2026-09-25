@@ -66,7 +66,14 @@ async def copy_messages(
     message_ids,
     protect_content: bool = False,
 ):
-    ids = sorted({int(message_id) for message_id in message_ids})
+    ids = []
+    for message_id in message_ids:
+        try:
+            value = int(message_id)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in ids:
+            ids.append(value)
     if not ids:
         return []
     if len(ids) > 100:
