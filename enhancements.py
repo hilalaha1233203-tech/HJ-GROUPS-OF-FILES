@@ -113,11 +113,11 @@ async def enhanced_media_forward(bot,user_id,file_id,channel_id=None):
     except Exception: source=None
     cap=await _caption(source) if source else None
     try:
-        await send_file._acquire_delivery_slot()
+        await send_file._acquire_delivery_slot(user_id)
         return await bot.copy_message(chat_id=user_id,from_chat_id=channel_id,message_id=file_id,caption=cap,protect_content=await db.get_protect_content(),reply_markup=_buttons_markup())
     except Exception as exc:
         from handlers.telegram_api import copy_message, edit_message_caption, edit_message_reply_markup
-        await send_file._acquire_delivery_slot()
+        await send_file._acquire_delivery_slot(user_id)
         copied=await copy_message(chat_id=user_id,from_chat_id=channel_id,message_id=file_id,protect_content=await db.get_protect_content())
         cid=copied.get("message_id") if isinstance(copied,dict) else getattr(copied,"id",None)
         if cid and cap:
