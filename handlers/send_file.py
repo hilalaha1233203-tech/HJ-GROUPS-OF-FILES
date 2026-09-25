@@ -204,6 +204,7 @@ async def media_forward(bot: Client, user_id: int, file_id: int, channel_id=None
                 from_chat_id=channel_id,
                 message_id=file_id,
                 protect_content=protect_content,
+                reply_markup=build_channel_buttons_json() or {"inline_keyboard": []},
             )
             copied_id = (copied or {}).get("message_id")
             if copied_id and caption:
