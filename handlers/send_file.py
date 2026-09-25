@@ -235,8 +235,26 @@ async def _process_auto_delete_job(bot, job):
             return True
         for offset in range(0, len(ids), 100):
             chunk = ids[offset:offset + 100]
-            await _acquire_delivery_slot(int(job["chat_id"]))
-            await api_delete_messages(int(job["chat_id"]), chunk)
+            try:
+                await _acquire_delivery_slot(int(job["chat_id"]))
+                await api_delete_messages(int(job["chat_id"]), chunk)
+            except Exception as bulk_error:
+                # If one stale/already-deleted ID poisons a bulk delete, fall
+                # back to individual deletes so valid messages are still removed.
+                from handlers.telegram_api import delete_message as api_delete_message
+                for mid in chunk:
+                    try:
+                        await _acquire_delivery_slot(int(job["chat_id"]))
+                        await api_delete_message(int(job["chat_id"]), mid)
+                    except Exception as one_error:
+                        message = str(one_error).lower()
+                        if any(token in message for token in (
+                            "message to delete not found",
+                            "message_id_invalid",
+                            "message identifier is not specified",
+                        )):
+                            continue
+                        raise bulk_error
         await db.complete_auto_delete(job_id)
         print(f"[AUTO_DELETE] Completed job={job_id} chat={job['chat_id']} messages={len(ids)}")
         return True
@@ -261,6 +279,10 @@ async def _process_auto_delete_job(bot, job):
 async def auto_delete_worker(bot: Client):
     """Durable worker: pending deletions survive bot restarts/deployments."""
     print("[AUTO_DELETE] Persistent worker started")
+    try:
+        await db.recover_stale_auto_deletes(120)
+    except Exception as exc:
+        print(f"[AUTO_DELETE] Startup recovery failed: {exc}")
     while True:
         try:
             jobs = await db.get_due_auto_deletes(limit=20)
