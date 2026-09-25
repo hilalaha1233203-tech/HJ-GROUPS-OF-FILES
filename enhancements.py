@@ -390,7 +390,14 @@ async def _deliver_direct(bot,user_id,items):
         if sid: ids.append(int(sid))
     delay=await db.get_auto_delete_seconds()
     if delay>0 and ids:
-        notice=await send_file.send_delete_notice(bot,user_id,delay); nid=getattr(notice,"id",None) if notice else None; delete_ids=ids+([int(nid)] if nid else []); await send_file.schedule_persistent_delete(user_id,delete_ids,delay)
+        delete_ids=list(ids)
+        try:
+            notice=await send_file.send_delete_notice(bot,user_id,delay)
+            nid=getattr(notice,"id",None) if notice else None
+            if nid: delete_ids.append(int(nid))
+        except Exception as notice_error:
+            print(f"[AUTO_DELETE] Enhanced notice failed for user={user_id}: {notice_error}")
+        await send_file.schedule_persistent_delete(user_id,delete_ids,delay)
 
 _original_run_bot=bot_legacy.run_bot
 async def _run_bot_enhanced():
