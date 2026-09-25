@@ -486,8 +486,21 @@ async def enhanced_save_batch(bot,editable,message_ids,source_chat_id=None,reque
 save_media.save_media_in_channel=enhanced_save_single
 save_media.save_batch_media_in_channel=enhanced_save_batch
 
+async def auto_delete_page(msg):
+    delay = await db.get_auto_delete_seconds()
+    current = "Disabled" if delay <= 0 else f"{delay // 60} minute(s)"
+    await msg.edit_text(
+        f"**Auto Delete Timer**\n\nCurrent: `{current}`\n\nSelect the auto-delete duration:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("5 min", callback_data="setdel_300"), InlineKeyboardButton("15 min", callback_data="setdel_900"), InlineKeyboardButton("30 min", callback_data="setdel_1800")],
+            [InlineKeyboardButton("1 hour", callback_data="setdel_3600"), InlineKeyboardButton("3 hours", callback_data="setdel_10800"), InlineKeyboardButton("6 hours", callback_data="setdel_21600")],
+            [InlineKeyboardButton("8 hours", callback_data="setdel_28800"), InlineKeyboardButton("12 hours", callback_data="setdel_43200"), InlineKeyboardButton("24 hours", callback_data="setdel_86400")],
+            [InlineKeyboardButton("♾️ Disable Timer", callback_data="setdel_0")],
+            [InlineKeyboardButton("< BACK", callback_data="hjset_main")],
+        ])
+
 async def show_settings(msg):
-    await msg.reply_text("**Settings**\nCustomize your settings as your need",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 URL SHORTENER",callback_data="hjset_shortener")],[InlineKeyboardButton("✏️ CUSTOM CAPTION",callback_data="hjset_caption")],[InlineKeyboardButton("🔘 CUSTOM BUTTON",callback_data="hjset_button")],[InlineKeyboardButton("🛡 PROTECT CONTENT",callback_data="hjset_protect")],[InlineKeyboardButton("< BACK",callback_data="hjset_main")]]))
+    await msg.reply_text("**Settings**\nCustomize your settings as your need",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 URL SHORTENER",callback_data="hjset_shortener")],[InlineKeyboardButton("✏️ CUSTOM CAPTION",callback_data="hjset_caption")],[InlineKeyboardButton("🔘 CUSTOM BUTTON",callback_data="hjset_button")],[InlineKeyboardButton("🛡 PROTECT CONTENT",callback_data="hjset_protect")],[InlineKeyboardButton("⏱ AUTO DELETE TIMER",callback_data="hjset_auto_delete")],[InlineKeyboardButton("< BACK",callback_data="hjset_main")]]))
 @Bot.on_message(filters.private & filters.command("settings"),group=-2)
 async def settings_cmd(_,m):
     if not _owner(m.from_user.id): await m.reply_text("⛔ Owner/Admin Only"); raise StopPropagation
@@ -522,6 +535,7 @@ async def settings_cb(_,q):
     elif d in {"hjset_btn_main","hjset_btn_pocket","hjset_btn_backup"}: k=d.rsplit("_",1)[1]; _st(q.from_user.id).update(mode="button",button=k); l={"main":"Main Channel","pocket":"Pocket Library","backup":"Backup Channel"}[k]; await q.message.edit_text(f"Send the Telegram channel/group link or @username for **{l}**.\n\nSend /cancel to stop.")
     elif d=="hjset_btn_delete_backup": BUTTON_CACHE["backup"]=None; await _set("custom_buttons",json.dumps(BUTTON_CACHE,ensure_ascii=False,separators=(",",":"))); await button_page(q.message)
     elif d=="hjset_protect": await protect_page(q.message)
+    elif d=="hjset_auto_delete": await auto_delete_page(q.message)
     elif d in {"hjset_toggle_forward","hjset_toggle_download"}: k="protect_forward" if d.endswith("forward") else "protect_download"; p=await db.get_protection_settings(); await db.set_protection_setting(k,not p[k]); await protect_page(q.message)
     raise StopPropagation
 
