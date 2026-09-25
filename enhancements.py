@@ -400,6 +400,7 @@ async def _deliver_direct(bot,user_id,items):
         except Exception:
             source=None
         caption=_caption_text(source,template) if source else None
+        cap_mode=_caption_parse_mode(template) if caption else None
         markup=None
         rows=[]
         for k,l in (("main","Main Channel"),("pocket","Pocket Library"),("backup","Backup Channel")):
