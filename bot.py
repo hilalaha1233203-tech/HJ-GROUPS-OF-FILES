@@ -126,6 +126,7 @@ async def setup_bot_commands():
         BotCommand("compress_bulk","Bulk compress storage media"),
         BotCommand("compression_status","Show compression jobs"),
         BotCommand("compression_cancel","Cancel a pending compression job"),
+        BotCommand("compression_retry","Retry a failed compression job"),
     ]
     # Set both the default scope and all-private-chats scope. Telegram clients
     # prefer a more specific scope over the default, so this prevents a stale
