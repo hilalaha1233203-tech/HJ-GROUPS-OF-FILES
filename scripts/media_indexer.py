@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Index Telegram storage media for the lightweight website streaming worker."""
 
+import asyncio
+import json
 import os
 from datetime import datetime, timezone
 
@@ -40,7 +42,7 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def configured_channels():
+def _configured_channels_sync():
     response = (
         sb.table("bot_settings")
         .select("value")
@@ -51,7 +53,6 @@ def configured_channels():
     channels = []
     if response.data:
         raw = response.data[0].get("value") or "[]"
-        import json
         try:
             values = json.loads(raw)
             if isinstance(values, list):
@@ -61,6 +62,21 @@ def configured_channels():
     if not channels and DB_CHANNEL:
         channels = [int(DB_CHANNEL)]
     return list(dict.fromkeys(channels))
+
+
+async def _db_call(operation, label, timeout=20):
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(operation),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        print(f"[SUPABASE] {label} timed out after {timeout}s", flush=True)
+        raise RuntimeError(f"Supabase operation timed out: {label}") from exc
+
+
+async def configured_channels():
+    return await _db_call(_configured_channels_sync, "read storage channels")
 
 
 def media_record(message, chat_id):
@@ -117,8 +133,22 @@ def media_record(message, chat_id):
     return None
 
 
+async def _upsert_records(records):
+    if not records:
+        return 0
+    await _db_call(
+        lambda: sb.table("telegram_media_index").upsert(
+            records,
+            on_conflict="storage_chat_id,telegram_message_id,media_kind",
+        ).execute(),
+        f"upsert {len(records)} media index records",
+        timeout=20,
+    )
+    return len(records)
+
+
 async def main():
-    channels = configured_channels()
+    channels = await configured_channels()
     if not channels:
         raise RuntimeError("No storage channel configured in bot_settings or DB_CHANNEL.")
 
@@ -137,18 +167,9 @@ async def main():
                 seen.add(key)
                 records.append(record)
                 if len(records) >= BATCH_SIZE:
-                    sb.table("telegram_media_index").upsert(
-                        records,
-                        on_conflict="storage_chat_id,telegram_message_id,media_kind",
-                    ).execute()
-                    total += len(records)
+                    total += await _upsert_records(records)
                     records = []
-            if records:
-                sb.table("telegram_media_index").upsert(
-                    records,
-                    on_conflict="storage_chat_id,telegram_message_id,media_kind",
-                ).execute()
-                total += len(records)
+            total += await _upsert_records(records)
 
     print(f"[INDEX] Indexed {total} media records.", flush=True)
 
