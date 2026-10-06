@@ -37,3 +37,56 @@ The SQL also creates the `bot_settings` table. After deployment, the bot owner c
 Available choices: 5 minutes, 15 minutes, 30 minutes, 1 hour, 6 hours, 24 hours, or disabled.
 
 This setting is stored in Supabase and is available after a worker restart. Only `BOT_OWNER` can change it.
+
+
+## 6. Compression + website streaming backend
+
+The Store Keeper bot now has an owner-only **Compression Center**:
+
+- `/compression` — open the button-based compression center.
+- `/compress` — reply to one storage-channel media message, or use `/compress <message_id>`.
+- `/compress_bulk audio 21-1114` — queue large audio files from a storage-channel message range.
+- `/compress_bulk video 1-500` — queue video compression.
+- `/compress_bulk document all` — queue safe document optimisation.
+- `/compression_status` — view job progress.
+- `/compression_cancel <job_id>` — cancel a pending job.
+
+The target profile **19 MB — Web Stream** is intended for the website Bot API streaming path. The heavy download/FFmpeg/upload work runs on an ephemeral GitHub-hosted runner. Render is not used for large media bytes.
+
+The SQL schema adds:
+
+- `compression_jobs` — durable, resumable compression queue.
+- `telegram_media_index` — server-side Telegram file-id index for the website worker.
+
+### GitHub repository secrets
+
+Add these secrets to **HJ-GROUPS-OF-FILES** before enabling the scheduled maintenance workflow:
+
+`API_ID`
+`API_HASH`
+`BOT_TOKEN`
+`SUPABASE_URL`
+`SUPABASE_SERVICE_ROLE_KEY`
+
+Optional:
+
+`DB_CHANNEL` — legacy fallback if `bot_settings.storage_channels` is empty.
+
+The scheduled workflow runs every 5 minutes and can also be started manually. It uses FFmpeg/Ghostscript on the ephemeral runner, processes jobs independently, and refreshes the Telegram media index.
+
+## 7. Cloudflare website streaming worker
+
+The lightweight Cloudflare worker no longer needs the MTProto `teleproto` bundle for website media delivery. It looks up the server-side `telegram_media_index`, calls Telegram Bot API `getFile`, and proxies the returned Telegram file response to the browser.
+
+Configure these Worker secrets/variables:
+
+`TELEGRAM_BOT_TOKEN`
+`SUPABASE_URL`
+`SUPABASE_PUBLISHABLE_KEY`
+`SUPABASE_SERVICE_ROLE_KEY`
+`HJ_WEB_BASE_URL`
+`MEDIA_TICKET_SECRET`
+`CORS_ALLOWED_ORIGINS`
+
+For website streaming, compressed media should remain below the Telegram Bot API 20 MB download limit; the worker intentionally returns a clear 413 error for larger indexed files instead of falling back to the old CPU-heavy MTProto path.
+
