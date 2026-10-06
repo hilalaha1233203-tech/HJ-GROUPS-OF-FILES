@@ -304,18 +304,33 @@ async def _queue_jobs(*, status_message, requested_by, source_chat_id, message_i
     return created
 
 
-async def _show_target(message, session):
+def _target_text(session):
     ids = session.get("ids") or []
     extra = ""
     if len(ids) == 1 and session.get("single_size"):
         extra = f"\nOriginal size: {_fmt_size(session['single_size'])}"
-    await message.edit_text(
+    return (
         f"🗜️ {session.get('kind', '').title()} Compression\n\n"
         f"Files selected: {len(ids)}{extra}\n\n"
-        "Choose a target size. Use 19 MB for website streaming.",
-        reply_markup=_target_keyboard(),
+        "Choose a target size. Use 19 MB for website streaming."
     )
 
+async def _send_target_prompt(message, session):
+    prompt = await message.reply_text(
+        _target_text(session),
+        reply_markup=_target_keyboard(),
+    )
+    session["ui_message_id"] = int(prompt.id)
+    return prompt
+
+async def _get_ui_message(bot, user_id, session):
+    ui_id = session.get("ui_message_id")
+    if not ui_id:
+        return None
+    try:
+        return await bot.get_messages(int(user_id), int(ui_id))
+    except Exception:
+        return None
 
 async def _queue_session(bot, query, target_mb):
     user_id = int(query.from_user.id)
@@ -337,8 +352,15 @@ async def _queue_session(bot, query, target_mb):
                 session["kind"],
                 target_bytes,
             )
+
+        status_message = query.message
+        if status_message is None:
+            status_message = await _get_ui_message(bot, user_id, session)
+        if status_message is None:
+            raise RuntimeError("Compression status message could not be recovered.")
+
         await _queue_jobs(
-            status_message=query.message,
+            status_message=status_message,
             requested_by=user_id,
             source_chat_id=int(session["chat_id"]),
             message_ids=ids,
@@ -346,17 +368,24 @@ async def _queue_session(bot, query, target_mb):
             target_mb=float(target_mb),
         )
         SESSION.pop(user_id, None)
-        await query.answer("Compression queued.")
+        try:
+            await query.answer("Compression queued.")
+        except Exception:
+            pass
     except Exception as exc:
-        await query.message.edit_text(
-            "❌ Compression queue failed\n\n"
-            f"{str(exc)[:500]}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔁 Try Again", callback_data="cmp:center")],
-            ]),
-        )
-        await query.answer("Compression queue failed.", show_alert=True)
-
+        status_message = query.message or await _get_ui_message(bot, user_id, session)
+        if status_message:
+            await status_message.edit_text(
+                "❌ Compression queue failed\n\n"
+                f"{str(exc)[:500]}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔁 Try Again", callback_data="cmp:center")],
+                ]),
+            )
+        try:
+            await query.answer("Compression queue failed.", show_alert=True)
+        except Exception:
+            pass
 
 async def _single_start(bot, command):
     chat_id, message_id = await _resolve_single_source(bot, command)
@@ -379,7 +408,7 @@ async def _single_start(bot, command):
         ),
     }
     SESSION[int(command.from_user.id)] = session
-    await _show_target(command, session)
+    await _send_target_prompt(command, session)
 
 
 async def _set_bulk_session(user_id, kind, raw_range):
@@ -444,7 +473,7 @@ async def compress_bulk_command(bot, message):
             raise StopPropagation
         try:
             await _set_bulk_session(message.from_user.id, kind, " ".join(args[1:]))
-            await _show_target(message, SESSION[int(message.from_user.id)])
+            await _send_target_prompt(message, SESSION[int(message.from_user.id)])
         except Exception as exc:
             await message.reply_text(f"❌ {str(exc)[:500]}")
         raise StopPropagation
@@ -758,11 +787,13 @@ async def compression_text_input(bot, message):
         if not 1 <= target <= 45:
             await message.reply_text("❌ Target must be between 1 and 45 MB.")
             raise StopPropagation
+        status_message = await message.reply_text("⏳ Starting compression queue...")
+        session["ui_message_id"] = int(status_message.id)
         query = type(
             "SyntheticQuery",
             (),
             {
-                "message": message,
+                "message": status_message,
                 "from_user": message.from_user,
                 "answer": lambda *args, **kwargs: None,
             },
@@ -786,5 +817,5 @@ async def compression_text_input(bot, message):
             single=False,
             ids=[],
         )
-        await _show_target(message, session)
+        await _send_target_prompt(message, session)
         raise StopPropagation
