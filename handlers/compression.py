@@ -17,6 +17,7 @@ from configs import Config
 from handlers.database import db
 
 
+Bot = bot_legacy.Bot
 SESSION = {}
 MAX_BULK_MESSAGES = 5000
 JOB_CHUNK_SIZE = 1
@@ -173,23 +174,31 @@ async def _get_source_message(bot, chat_id, message_id):
     return message, kind
 
 
-async def _scan_range(bot, chat_id, start_id, end_id, kind, target_bytes):
-    low, high = sorted((int(start_id), int(end_id)))
-    if high - low > MAX_BULK_MESSAGES:
-        raise ValueError(f"Bulk range is limited to {MAX_BULK_MESSAGES + 1} message IDs.")
+async def _scan_range(bot, chat_id, start_id, end_id, kind, target_bytes, all_messages=False):
+    if all_messages:
+        low, high = 1, None
+        history_limit = MAX_BULK_MESSAGES
+    else:
+        low, high = sorted((int(start_id), int(end_id)))
+        requested_count = high - low + 1
+        if requested_count > MAX_BULK_MESSAGES:
+            raise ValueError(f"Bulk range is limited to {MAX_BULK_MESSAGES} message IDs.")
+        history_limit = requested_count
 
     await bot.get_chat(int(chat_id))
     result = []
-    async for message in bot.get_chat_history(
-        int(chat_id), limit=MAX_BULK_MESSAGES + 1
-    ):
+    history_kwargs = {"limit": history_limit}
+    if not all_messages:
+        history_kwargs["offset_id"] = high + 1
+    async for message in bot.get_chat_history(int(chat_id), **history_kwargs):
         if message is None:
             continue
         mid = int(message.id)
-        if mid < low:
-            break
-        if mid > high:
-            continue
+        if not all_messages:
+            if mid < low:
+                break
+            if mid > high:
+                continue
         if _safe_kind(message) != kind:
             continue
         media = (
@@ -347,10 +356,11 @@ async def _queue_session(bot, query, target_mb):
             ids = await _scan_range(
                 bot,
                 int(session["chat_id"]),
-                int(session["start_id"]),
-                int(session["end_id"]),
+                session.get("start_id"),
+                session.get("end_id"),
                 session["kind"],
                 target_bytes,
+                all_messages=bool(session.get("all_messages")),
             )
 
         status_message = query.message
@@ -420,9 +430,13 @@ async def _set_bulk_session(user_id, kind, raw_range):
     if match:
         start_id, end_id = int(match.group(1)), int(match.group(2))
     elif value.lower() == "all":
-        start_id, end_id = 1, 2**31 - 1
+        start_id, end_id = None, None
+        all_messages = True
     else:
         raise ValueError("Send a range like 21-1114 or all.")
+
+    if match:
+        all_messages = False
 
     SESSION[int(user_id)] = {
         "step": "target",
@@ -431,6 +445,7 @@ async def _set_bulk_session(user_id, kind, raw_range):
         "chat_id": int(channels[0]),
         "start_id": start_id,
         "end_id": end_id,
+        "all_messages": all_messages,
         "ids": [],
     }
 
@@ -886,13 +901,16 @@ async def compression_text_input(bot, message):
             await message.reply_text("❌ Use a range like 21-1114 or all.")
             raise StopPropagation
         if value.lower() == "all":
-            start_id, end_id = 1, 2**31 - 1
+            start_id, end_id = None, None
+            all_messages = True
         else:
             start_id, end_id = int(match.group(1)), int(match.group(2))
+            all_messages = False
         session.update(
             step="target",
             start_id=start_id,
             end_id=end_id,
+            all_messages=all_messages,
             single=False,
             ids=[],
         )
