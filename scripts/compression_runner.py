@@ -292,6 +292,8 @@ def build_input_media(info, out_path, source):
         return InputMediaAudio(
             out_path,
             caption=caption,
+            caption_entities=list(source.caption_entities or []),
+            parse_mode=None,
             duration=int(getattr(audio, "duration", 0) or 0),
             performer=getattr(audio, "performer", None),
             title=getattr(audio, "title", None),
@@ -301,12 +303,19 @@ def build_input_media(info, out_path, source):
         return InputMediaVideo(
             out_path,
             caption=caption,
+            caption_entities=list(source.caption_entities or []),
+            parse_mode=None,
             width=int(getattr(video, "width", 0) or 0),
             height=int(getattr(video, "height", 0) or 0),
             duration=int(getattr(video, "duration", 0) or 0),
             supports_streaming=True,
         )
-    return InputMediaDocument(out_path, caption=caption)
+    return InputMediaDocument(
+        out_path,
+        caption=caption,
+        caption_entities=list(source.caption_entities or []),
+        parse_mode=None,
+    )
 
 
 async def update_index(source_chat_id, edited):
