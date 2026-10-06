@@ -40,7 +40,7 @@ FILESTORE_COMMANDS = [
     "broadcast", "ban", "unban", "status", "ban_user",
     "unban_user", "banned_users", "direct", "direct_batch",
     "caption_replace", "set_caption", "set_thumbnail",
-    "compression", "compress", "compress_bulk", "compression_status", "compression_cancel",
+    "compression", "compress", "compress_bulk", "compression_status", "compression_cancel", "compression_retry",
 ]
 
 Bot = Client(
