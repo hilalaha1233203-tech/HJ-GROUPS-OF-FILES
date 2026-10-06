@@ -1,0 +1,151 @@
+name: HJ Telegram Maintenance Test Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_compression_jobs:
+        description: "Maximum compression jobs to process in this manual test run"
+        required: false
+        default: "10"
+        type: string
+
+concurrency:
+  group: hj-telegram-maintenance-test
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  maintenance:
+    name: Run existing Telegram maintenance implementation
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      DB_CHANNEL: ${{ secrets.DB_CHANNEL }}
+
+    steps:
+      - name: Validate required maintenance configuration
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in API_ID API_HASH BOT_TOKEN SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY DB_CHANNEL; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if ((${#missing[@]})); then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Maintenance test skipped because required secrets are missing: ${missing[*]}"
+            exit 0
+          fi
+
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "Required maintenance secrets are configured (values are not printed)."
+
+      - name: Checkout exact maintenance feature branch
+        if: steps.config.outputs.configured == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: feat/storekeeper-compression-streaming
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify maintenance source is the feature branch
+        if: steps.config.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="$(git branch --show-current)"
+          feature_sha="$(git rev-parse refs/remotes/origin/feat/storekeeper-compression-streaming)"
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+          checked_out_sha="$(git rev-parse HEAD)"
+
+          [[ "$branch" == "feat/storekeeper-compression-streaming" ]] || {
+            echo "ERROR: Unexpected checkout branch: $branch" >&2
+            exit 1
+          }
+          [[ "$checked_out_sha" == "$feature_sha" ]] || {
+            echo "ERROR: Checked-out commit does not match the feature branch tip." >&2
+            exit 1
+          }
+          [[ "$checked_out_sha" != "$main_sha" ]] || {
+            echo "ERROR: Maintenance test resolved to main; refusing to run." >&2
+            exit 1
+          }
+
+          test -f requirements-maintenance.txt
+          test -f scripts/compression_runner.py
+          test -f scripts/media_indexer.py
+
+          echo "Maintenance source verified: $branch @ $checked_out_sha"
+          echo "Required maintenance files are present."
+
+      - name: Install FFmpeg and Ghostscript
+        if: steps.config.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg ghostscript
+          ffmpeg -version | head -n 1
+          gs --version
+
+      - name: Setup Python 3.11
+        if: steps.config.outputs.configured == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-maintenance.txt
+
+      - name: Install maintenance dependencies from feature branch
+        if: steps.config.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-maintenance.txt
+
+      - name: Validate manual compression job limit
+        if: steps.config.outputs.configured == 'true'
+        env:
+          MAX_COMPRESSION_JOBS: ${{ inputs.max_compression_jobs || '10' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$MAX_COMPRESSION_JOBS" =~ ^[1-9][0-9]*$ ]] || {
+            echo "ERROR: max_compression_jobs must be a positive integer; received a non-secret value." >&2
+            exit 1
+          }
+          echo "Compression job limit: $MAX_COMPRESSION_JOBS"
+
+      - name: Run existing compression maintenance implementation
+        if: steps.config.outputs.configured == 'true'
+        env:
+          MAX_COMPRESSION_JOBS: ${{ inputs.max_compression_jobs || '10' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/compression_runner.py
+
+      - name: Run existing Telegram media indexer
+        if: steps.config.outputs.configured == 'true'
+        env:
+          MEDIA_INDEX_MAX_MESSAGES: "5000"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/media_indexer.py
+
+      - name: Report configuration-only run
+        if: steps.config.outputs.configured != 'true'
+        run: echo "Maintenance test intentionally remained idle because required secrets are not configured."
