@@ -32,24 +32,30 @@ def env(name):
     return value.strip()
 
 
-SUPABASE_URL = env("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-if not SUPABASE_KEY:
-    raise RuntimeError("Missing required environment variable: SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL = ""
+SUPABASE_KEY = ""
+API_ID = 0
+API_HASH = ""
+BOT_TOKEN = ""
+sb = None
+app = None
 
-API_ID = int(env("API_ID"))
-API_HASH = env("API_HASH")
-BOT_TOKEN = env("BOT_TOKEN")
 
-sb = create_client(SUPABASE_URL, SUPABASE_KEY)
-app = Client(
-    "hj_compression_runner",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    in_memory=True,
-)
-
+def init_runtime():
+    global SUPABASE_URL, SUPABASE_KEY, API_ID, API_HASH, BOT_TOKEN, sb, app
+    SUPABASE_URL = env("SUPABASE_URL")
+    SUPABASE_KEY = env("SUPABASE_SERVICE_ROLE_KEY")
+    API_ID = int(env("API_ID"))
+    API_HASH = env("API_HASH")
+    BOT_TOKEN = env("BOT_TOKEN")
+    sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+    app = Client(
+        "hj_compression_runner",
+        api_id=API_ID,
+        api_hash=API_HASH,
+        bot_token=BOT_TOKEN,
+        in_memory=True,
+    )
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
@@ -504,6 +510,7 @@ async def process_job(job):
 
 
 async def main():
+    init_runtime()
     max_jobs = int(os.environ.get("MAX_COMPRESSION_JOBS", DEFAULT_MAX_JOBS))
     jobs = fetch_jobs(max_jobs)
     if not jobs:
