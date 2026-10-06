@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Process one or more HJ compression jobs on an ephemeral GitHub runner."""
 
+import asyncio
 import json
 import math
 import os
@@ -128,12 +129,8 @@ def media_info(message):
     return None
 
 
-def fetch_jobs(limit):
-    """Recover genuinely stale jobs, then atomically claim pending jobs.
-
-    The compare-and-swap style status update prevents two independent GitHub
-    runners/manual dispatches from processing the same job concurrently.
-    """
+def _fetch_jobs_sync(limit):
+    """Recover stale jobs and atomically claim pending jobs."""
     stale_before = (datetime.now(timezone.utc) - timedelta(minutes=JOB_MAX_AGE_MINUTES)).isoformat()
     try:
         sb.table("compression_jobs").update({
@@ -151,7 +148,7 @@ def fetch_jobs(limit):
         .select("id")
         .eq("status", "pending")
         .order("created_at")
-        .limit(limit)
+        .limit(int(limit))
         .execute()
     )
     jobs = []
@@ -180,10 +177,34 @@ def fetch_jobs(limit):
             print(f"[CLAIM] Job {job_id} could not be claimed: {exc}", flush=True)
     return jobs
 
+async def _db_call(operation, label, timeout=20):
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(operation),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        print(f"[SUPABASE] {label} timed out after {timeout}s", flush=True)
+        raise RuntimeError(f"Supabase operation timed out: {label}") from exc
 
-def set_job(job_id, **values):
+
+async def fetch_jobs(limit):
+    return await _db_call(
+        lambda: _fetch_jobs_sync(limit),
+        "fetch and claim compression jobs",
+        timeout=60,
+    )
+
+
+async def set_job(job_id, **values):
     values["updated_at"] = now_iso()
-    sb.table("compression_jobs").update(values).eq("id", int(job_id)).execute()
+    await _db_call(
+        lambda: sb.table("compression_jobs")
+        .update(values)
+        .eq("id", int(job_id))
+        .execute(),
+        f"update compression job {job_id}",
+    )
 
 
 async def update_owner_status(job, text):
@@ -391,11 +412,12 @@ async def update_index(source_chat_id, edited):
         "height": int(info.get("height") or 0),
         "updated_at": now_iso(),
     }
-    import asyncio
-    await asyncio.to_thread(
+    await _db_call(
         lambda: sb.table("telegram_media_index").upsert(
             row, on_conflict="storage_chat_id,telegram_message_id,media_kind"
-        ).execute()
+        ).execute(),
+        f"update media index {source_chat_id}:{edited.id}",
+        timeout=20,
     )
 
 
@@ -415,7 +437,7 @@ def caption_signature(message):
 
 async def process_job(job):
     job_id = int(job["id"])
-    set_job(
+    await set_job(
         job_id,
         status="running",
         started_at=job.get("started_at") or now_iso(),
@@ -439,7 +461,7 @@ async def process_job(job):
 
     if not ids:
         reason = "Compression job contains no valid Telegram message IDs"
-        set_job(
+        await set_job(
             job_id,
             status="failed",
             total_count=0,
@@ -456,7 +478,7 @@ async def process_job(job):
 
     for idx, message_id in enumerate(ids, start=1):
         try:
-            set_job(
+            await set_job(
                 job_id,
                 current_index=idx - 1,
                 current_message_id=message_id,
@@ -486,7 +508,7 @@ async def process_job(job):
             if info["size"] <= target:
                 await update_index(int(job["source_chat_id"]), source)
                 skipped += 1
-                set_job(
+                await set_job(
                     job_id,
                     current_index=idx,
                     skipped_count=skipped,
@@ -502,7 +524,7 @@ async def process_job(job):
                     f"Input is {human_size(info['size'])}; this runner intentionally caps one file at 500 MB."
                 )
 
-            set_job(
+            await set_job(
                 job_id,
                 current_original_size=info["size"],
                 current_output_size=None,
@@ -642,7 +664,7 @@ async def process_job(job):
 
                 await update_index(int(job["source_chat_id"]), verified)
                 successes += 1
-                set_job(
+                await set_job(
                     job_id,
                     current_index=idx,
                     success_count=successes,
@@ -656,7 +678,7 @@ async def process_job(job):
             failures += 1
             reason = str(exc)[:1000]
             errors.append(f"Message {message_id}: {reason}")
-            set_job(
+            await set_job(
                 job_id,
                 current_index=idx,
                 success_count=successes,
@@ -685,7 +707,7 @@ async def process_job(job):
     if final_error:
         final_message += f"\n\nLast errors:\n{final_error[:1600]}"
 
-    set_job(
+    await set_job(
         job_id,
         status=final_status,
         current_index=len(ids),
@@ -703,7 +725,7 @@ async def process_job(job):
 async def main():
     init_runtime()
     max_jobs = int(os.environ.get("MAX_COMPRESSION_JOBS", DEFAULT_MAX_JOBS))
-    jobs = fetch_jobs(max_jobs)
+    jobs = await fetch_jobs(max_jobs)
     if not jobs:
         print("[COMPRESSION] No pending jobs.", flush=True)
         return
@@ -711,10 +733,8 @@ async def main():
         for job in jobs:
             ok = await process_job(job)
             if not ok:
-                # Continue with other independent jobs.
                 continue
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
