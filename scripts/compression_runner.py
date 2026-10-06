@@ -168,6 +168,18 @@ async def update_owner_status(job, text):
         print(f"[STATUS] {exc}", flush=True)
 
 
+async def _call_with_floodwait(operation, label, retries=5):
+    for attempt in range(retries):
+        try:
+            return await operation()
+        except FloodWait as exc:
+            if attempt >= retries - 1:
+                raise
+            delay = max(1, int(exc.value))
+            print(f"[FLOODWAIT] {label}: sleeping {delay}s", flush=True)
+            await asyncio_sleep(delay)
+    raise RuntimeError(f"{label} failed after retries")
+
 def asyncio_sleep(seconds):
     import asyncio
     return asyncio.sleep(max(1, int(seconds)))
@@ -376,7 +388,7 @@ async def process_job(job):
                 current_message_id=message_id,
                 updated_at=now_iso(),
             )
-            source = await app.get_messages(int(job["source_chat_id"]), int(message_id))
+            source = await _call_with_floodwait(lambda: app.get_messages(int(job["source_chat_id"]), int(message_id)), f"get message {message_id}")
             if not source:
                 raise RuntimeError(f"Message {message_id} was not found")
             info = media_info(source)
@@ -407,7 +419,7 @@ async def process_job(job):
                     f"Processing {idx}/{len(ids)}\nMessage: {message_id}\nOriginal: {human_size(info['size'])}\n"
                     f"Target: {float(job.get('target_mb') or 19):g} MB\n\nDownloading…",
                 )
-                downloaded = await app.download_media(source, file_name=src_path)
+                downloaded = await _call_with_floodwait(lambda: app.download_media(source, file_name=src_path), f"download message {message_id}")
                 if not downloaded or not Path(downloaded).exists():
                     raise RuntimeError("Telegram media download returned no file")
                 src_path = str(downloaded)
@@ -443,10 +455,13 @@ async def process_job(job):
                     f"Compressed: {human_size(output_size)}\n\nUploading/replacing…",
                 )
                 media = build_input_media(info, out_path, source)
-                edited = await app.edit_message_media(
-                    int(job["source_chat_id"]),
-                    int(message_id),
-                    media,
+                edited = await _call_with_floodwait(
+                    lambda: app.edit_message_media(
+                        int(job["source_chat_id"]),
+                        int(message_id),
+                        media,
+                    ),
+                    f"replace message {message_id}",
                 )
                 if not edited:
                     raise RuntimeError("Telegram edit_message_media returned no result")
@@ -499,10 +514,11 @@ async def process_job(job):
             last_error=str(exc)[:1000],
             completed_at=now_iso(),
         )
+        current_message = job.get("current_message_id") or (ids[0] if len(ids) == 1 else "—")
         await update_owner_status(
-            job,
+            {**job, "current_message_id": current_message},
             f"❌ HJ Compression Job #{job_id} failed\n\n"
-            f"Message: {job.get('current_message_id') or '—'}\n"
+            f"Message: {current_message}\n"
             f"Error: {str(exc)[:700]}",
         )
         print(f"[JOB {job_id}] FAILED: {exc}", flush=True)
