@@ -19,7 +19,7 @@ from handlers.database import db
 
 SESSION = {}
 MAX_BULK_MESSAGES = 5000
-JOB_CHUNK_SIZE = 5
+JOB_CHUNK_SIZE = 1
 SUPPORTED_KINDS = ("audio", "video", "document")
 
 
