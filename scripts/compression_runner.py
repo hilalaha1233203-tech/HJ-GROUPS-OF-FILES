@@ -176,14 +176,14 @@ def audio_bitrate_kbps(target, duration):
     if duration <= 0:
         return 96
     # Leave container overhead and metadata headroom.
-    raw = (target * 8 * 0.90) / duration
+    raw = (target * 8 * 1000 * 0.90) / duration
     return max(MIN_AUDIO_KBPS, min(MAX_AUDIO_KBPS, int(raw)))
 
 
 def video_bitrate_kbps(target, duration):
     if duration <= 0:
         return 600
-    raw = (target * 8 * 0.88) / duration
+    raw = (target * 8 * 1000 * 0.88) / duration
     audio = 48 if raw < 120 else 64
     video = int(raw - audio)
     return max(60, min(3500, video))
