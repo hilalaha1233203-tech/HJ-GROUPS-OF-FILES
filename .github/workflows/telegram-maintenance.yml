@@ -21,11 +21,37 @@ jobs:
   maintenance:
     runs-on: ubuntu-latest
     timeout-minutes: 330
+    env:
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      DB_CHANNEL: ${{ secrets.DB_CHANNEL }}
     steps:
+      - name: Check maintenance configuration
+        id: config
+        shell: bash
+        run: |
+          missing=()
+          [[ -n "$API_ID" ]] || missing+=(API_ID)
+          [[ -n "$API_HASH" ]] || missing+=(API_HASH)
+          [[ -n "$BOT_TOKEN" ]] || missing+=(BOT_TOKEN)
+          [[ -n "$SUPABASE_URL" ]] || missing+=(SUPABASE_URL)
+          [[ -n "$SUPABASE_SERVICE_ROLE_KEY" ]] || missing+=(SUPABASE_SERVICE_ROLE_KEY)
+          if ((${#missing[@]})); then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            printf '%s\n' "::notice::Compression maintenance is not configured; no media job will run."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.config.outputs.configured == 'true'
         uses: actions/checkout@v4
 
       - name: Install media tools
+        if: steps.config.outputs.configured == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ffmpeg ghostscript
@@ -33,6 +59,7 @@ jobs:
           gs --version
 
       - name: Setup Python
+        if: steps.config.outputs.configured == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -40,25 +67,21 @@ jobs:
           cache-dependency-path: requirements-maintenance.txt
 
       - name: Install maintenance dependencies
+        if: steps.config.outputs.configured == 'true'
         run: python -m pip install -r requirements-maintenance.txt
 
       - name: Process compression queue
+        if: steps.config.outputs.configured == 'true'
         env:
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MAX_COMPRESSION_JOBS: ${{ github.event.inputs.max_compression_jobs || '10' }}
         run: python scripts/compression_runner.py
 
       - name: Refresh Telegram media index
+        if: steps.config.outputs.configured == 'true'
         env:
-          API_ID: ${{ secrets.API_ID }}
-          API_HASH: ${{ secrets.API_HASH }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          DB_CHANNEL: ${{ secrets.DB_CHANNEL }}
           MEDIA_INDEX_MAX_MESSAGES: "5000"
         run: python scripts/media_indexer.py
+
+      - name: Configuration status
+        if: steps.config.outputs.configured != 'true'
+        run: echo "✅ No secrets configured yet; maintenance is intentionally idle."
