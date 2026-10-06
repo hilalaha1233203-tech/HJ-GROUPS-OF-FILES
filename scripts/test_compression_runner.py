@@ -27,6 +27,20 @@ class CompressionMathTests(unittest.TestCase):
         self.assertLessEqual(video_bitrate_kbps(45, 30), 3500)
 
 
+def _ffprobe(path):
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-print_format", "json",
+            "-show_format", "-show_streams", path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    import json
+    return json.loads(result.stdout)
+
+
 class CompressionToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -39,6 +53,43 @@ class CompressionToolTests(unittest.TestCase):
     def tearDownClass(cls):
         if hasattr(cls, "tmp"):
             cls.tmp.cleanup()
+
+    def test_audio_realistic_size_profiles_21_30_50_100_mb(self):
+        import math
+
+        sample_rate = 48000
+        bytes_per_second = sample_rate * 2
+        target = 19 * 1024 * 1024
+        for size_mb in (21, 30, 50, 100):
+            with self.subTest(size_mb=size_mb):
+                src = self.dir / f"input-{size_mb}mb.wav"
+                out = self.dir / f"output-{size_mb}mb.m4a"
+                expected_duration = math.ceil((size_mb * 1024 * 1024) / bytes_per_second) + 1
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-f", "lavfi",
+                        "-i", f"sine=frequency=440:duration={expected_duration}",
+                        "-ac", "1", "-ar", str(sample_rate),
+                        "-c:a", "pcm_s16le", str(src),
+                    ],
+                    check=True,
+                )
+                original = src.stat().st_size
+                self.assertGreater(original, 20 * 1024 * 1024)
+                output = compress_audio(str(src), str(out), target, expected_duration)
+                self.assertLess(output, original)
+                self.assertLessEqual(output, target)
+                meta = _ffprobe(str(out))
+                streams = [s for s in meta["streams"] if s.get("codec_type") == "audio"]
+                self.assertEqual(len(streams), 1)
+                self.assertEqual(streams[0]["codec_name"], "aac")
+                duration = float(meta["format"]["duration"])
+                self.assertLess(abs(duration - expected_duration), 2.0)
+                subprocess.run(
+                    ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(out), "-f", "null", "-"],
+                    check=True,
+                )
 
     def test_audio_compression_reaches_target_and_is_smaller(self):
         src = self.dir / "input.wav"
@@ -56,6 +107,31 @@ class CompressionToolTests(unittest.TestCase):
         self.assertTrue(out.exists())
         self.assertLessEqual(output, original)
         self.assertLessEqual(output, 0.5 * 1024 * 1024)
+
+    def test_pdf_optimization_produces_a_real_pdf(self):
+        if not shutil.which("gs"):
+            self.skipTest("ghostscript is not installed")
+        ps = self.dir / "input.ps"
+        src = self.dir / "input.pdf"
+        out = self.dir / "output.pdf"
+        ps.write_text(
+            "%!PS
+/Helvetica findfont 18 scalefont setfont "
+            "72 720 moveto (HJ GROUPS PDF optimisation test) show showpage
+",
+            encoding="ascii",
+        )
+        subprocess.run(
+            [
+                "gs", "-q", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pdfwrite",
+                f"-sOutputFile={src}", str(ps),
+            ],
+            check=True,
+        )
+        output = optimize_document(str(src), str(out), "input.pdf")
+        self.assertTrue(out.exists())
+        self.assertEqual(out.read_bytes()[:5], b"%PDF-")
+        self.assertGreater(output, 0)
 
     def test_video_compression_reaches_target_and_is_smaller(self):
         src = self.dir / "input.mp4"
@@ -77,6 +153,36 @@ class CompressionToolTests(unittest.TestCase):
         self.assertTrue(out.exists())
         self.assertLess(output, original)
         self.assertLessEqual(output, 1.0 * 1024 * 1024)
+
+    def test_video_output_is_h264_aac_and_streaming_compatible(self):
+        src = self.dir / "input-streaming.mp4"
+        out = self.dir / "output-streaming.mp4"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=20",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-c:v", "libx264", "-preset", "veryfast", "-b:v", "2M",
+                "-c:a", "aac", "-b:a", "128k", str(src),
+            ],
+            check=True,
+        )
+        output = compress_video(str(src), str(out), 1.0, 20, 1280, 720)
+        self.assertLess(output, src.stat().st_size)
+        self.assertLessEqual(output, 1.0 * 1024 * 1024)
+        meta = _ffprobe(str(out))
+        video = next(s for s in meta["streams"] if s.get("codec_type") == "video")
+        audio = next(s for s in meta["streams"] if s.get("codec_type") == "audio")
+        self.assertEqual(video["codec_name"], "h264")
+        self.assertEqual(audio["codec_name"], "aac")
+        self.assertGreater(int(video["width"]), 0)
+        self.assertGreater(int(video["height"]), 0)
+        self.assertLess(abs(float(video.get("duration", 20)) - 20), 2.0)
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(out), "-f", "null", "-"],
+            check=True,
+        )
 
     def test_zip_document_optimization_never_grows_on_repetitive_content(self):
         import zipfile
