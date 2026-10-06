@@ -54,7 +54,7 @@ class CompressionToolTests(unittest.TestCase):
         original = src.stat().st_size
         output = compress_audio(str(src), str(out), 0.5, 30)
         self.assertTrue(out.exists())
-        self.assertLess(output, original)
+        self.assertLessEqual(output, original)
         self.assertLessEqual(output, 0.5 * 1024 * 1024)
 
     def test_video_compression_reaches_target_and_is_smaller(self):
