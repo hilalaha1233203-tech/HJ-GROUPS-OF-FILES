@@ -81,10 +81,14 @@ The lightweight Cloudflare worker no longer needs the MTProto `teleproto` bundle
 Configure these Worker secrets/variables:
 
 `TELEGRAM_BOT_TOKEN`
-`SUPABASE_URL`
-`SUPABASE_PUBLISHABLE_KEY`
-`SUPABASE_SERVICE_ROLE_KEY`
+`SUPABASE_URL` — website content/access database
+`SUPABASE_PUBLISHABLE_KEY` — website public key
+`SUPABASE_SERVICE_ROLE_KEY` — fallback only when the media index is in the same project
+`MEDIA_INDEX_SUPABASE_URL` — Store Keeper project URL when it differs from the website project
+`MEDIA_INDEX_SUPABASE_SERVICE_ROLE_KEY` — Store Keeper project service-role/secret key
 `HJ_WEB_BASE_URL`
+`MEDIA_TICKET_SECRET`
+`CORS_ALLOWED_ORIGINS`
 `MEDIA_TICKET_SECRET`
 `CORS_ALLOWED_ORIGINS`
 
