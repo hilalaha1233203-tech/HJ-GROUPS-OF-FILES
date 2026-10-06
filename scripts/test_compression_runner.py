@@ -115,10 +115,10 @@ class CompressionToolTests(unittest.TestCase):
         src = self.dir / "input.pdf"
         out = self.dir / "output.pdf"
         ps.write_text(
-            "%!PS
-/Helvetica findfont 18 scalefont setfont "
-            "72 720 moveto (HJ GROUPS PDF optimisation test) show showpage
-",
+            """%!PS
+/Helvetica findfont 18 scalefont setfont
+72 720 moveto (HJ GROUPS PDF optimisation test) show showpage
+""",
             encoding="ascii",
         )
         subprocess.run(
