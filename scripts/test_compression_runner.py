@@ -88,9 +88,19 @@ class CompressionToolTests(unittest.TestCase):
             zf.writestr("data.txt", payload)
         original = src.stat().st_size
         output = optimize_document(str(src), str(out), "input.zip")
-        self.assertLess(output, original)
+        # Optimization must never grow the original. The production runner
+        # rejects non-shrinking output before Telegram replacement.
+        self.assertLessEqual(output, original)
         with zipfile.ZipFile(out) as zf:
             self.assertEqual(zf.read("data.txt"), payload)
+
+    def test_unsupported_document_type_fails_clearly(self):
+        src = self.dir / "input.bin"
+        out = self.dir / "output.bin"
+        src.write_bytes(b"not a supported document optimizer")
+        from scripts.compression_runner import optimize_document
+        with self.assertRaisesRegex(RuntimeError, "Safe document optimisation"):
+            optimize_document(str(src), str(out), "input.bin")
 
     def test_input_media_constructors_preserve_caption_entities(self):
         source = SimpleNamespace(
