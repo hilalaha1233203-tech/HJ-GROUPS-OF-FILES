@@ -19,7 +19,7 @@ from supabase import create_client
 
 
 MAX_FILE_BYTES = 500 * 1024 * 1024
-JOB_MAX_AGE_MINUTES = 180
+JOB_MAX_AGE_MINUTES = 360
 DEFAULT_MAX_JOBS = 10
 MIN_AUDIO_KBPS = 24
 MAX_AUDIO_KBPS = 160
@@ -129,11 +129,18 @@ def media_info(message):
 
 
 def fetch_jobs(limit):
+    """Recover genuinely stale jobs, then atomically claim pending jobs.
+
+    The compare-and-swap style status update prevents two independent GitHub
+    runners/manual dispatches from processing the same job concurrently.
+    """
     stale_before = (datetime.now(timezone.utc) - timedelta(minutes=JOB_MAX_AGE_MINUTES)).isoformat()
     try:
         sb.table("compression_jobs").update({
             "status": "pending",
             "last_error": "Recovered stale runner job",
+            "started_at": None,
+            "completed_at": None,
             "updated_at": now_iso(),
         }).eq("status", "running").lt("updated_at", stale_before).execute()
     except Exception as exc:
@@ -141,13 +148,37 @@ def fetch_jobs(limit):
 
     response = (
         sb.table("compression_jobs")
-        .select("*")
+        .select("id")
         .eq("status", "pending")
         .order("created_at")
         .limit(limit)
         .execute()
     )
-    return response.data or []
+    jobs = []
+    for row in response.data or []:
+        job_id = int(row["id"])
+        try:
+            claimed = (
+                sb.table("compression_jobs")
+                .update({
+                    "status": "running",
+                    "started_at": now_iso(),
+                    "completed_at": None,
+                    "updated_at": now_iso(),
+                    "last_error": "",
+                })
+                .eq("id", job_id)
+                .eq("status", "pending")
+                .select("*")
+                .execute()
+            )
+            if claimed.data:
+                jobs.append(claimed.data[0])
+            else:
+                print(f"[CLAIM] Job {job_id} was already claimed.", flush=True)
+        except Exception as exc:
+            print(f"[CLAIM] Job {job_id} could not be claimed: {exc}", flush=True)
+    return jobs
 
 
 def set_job(job_id, **values):
@@ -354,9 +385,26 @@ async def update_index(source_chat_id, edited):
         "height": int(info.get("height") or 0),
         "updated_at": now_iso(),
     }
-    sb.table("telegram_media_index").upsert(
-        row, on_conflict="storage_chat_id,telegram_message_id,media_kind"
-    ).execute()
+    import asyncio
+    await asyncio.to_thread(
+        lambda: sb.table("telegram_media_index").upsert(
+            row, on_conflict="storage_chat_id,telegram_message_id,media_kind"
+        ).execute()
+    )
+
+
+def caption_signature(message):
+    entities = []
+    for entity in getattr(message, "caption_entities", None) or []:
+        entities.append((
+            getattr(entity, "type", None),
+            getattr(entity, "offset", None),
+            getattr(entity, "length", None),
+            getattr(entity, "url", None),
+            getattr(entity, "language", None),
+            getattr(entity, "custom_emoji_id", None),
+        ))
+    return (message.caption or "", tuple(entities))
 
 
 async def process_job(job):
@@ -364,40 +412,85 @@ async def process_job(job):
     set_job(
         job_id,
         status="running",
-        started_at=now_iso(),
+        started_at=job.get("started_at") or now_iso(),
         completed_at=None,
         last_error="",
     )
-    ids = [int(x) for x in (job.get("source_message_ids") or [])]
+    ids = []
+    for value in (job.get("source_message_ids") or []):
+        try:
+            mid = int(value)
+        except (TypeError, ValueError):
+            continue
+        if mid > 0 and mid not in ids:
+            ids.append(mid)
+
     target = target_bytes(job)
     successes = int(job.get("success_count") or 0)
     skipped = int(job.get("skipped_count") or 0)
     failures = int(job.get("failed_count") or 0)
+    errors = []
 
-    try:
-        for idx, message_id in enumerate(ids, start=1):
-            await update_owner_status(
-                job,
-                f"🗜️ HJ Compression Job #{job_id}\n\n"
-                f"Processing {idx}/{len(ids)}\nMessage: {message_id}\nTarget: {float(job.get('target_mb') or 19):g} MB\n\n"
-                "Downloading media…",
-            )
+    if not ids:
+        reason = "Compression job contains no valid Telegram message IDs"
+        set_job(
+            job_id,
+            status="failed",
+            total_count=0,
+            failed_count=1,
+            last_error=reason,
+            completed_at=now_iso(),
+        )
+        await update_owner_status(
+            job,
+            f"❌ HJ Compression Job #{job_id} failed\n\n{reason}",
+        )
+        print(f"[JOB {job_id}] FAILED: {reason}", flush=True)
+        return False
+
+    for idx, message_id in enumerate(ids, start=1):
+        try:
             set_job(
                 job_id,
                 current_index=idx - 1,
                 current_message_id=message_id,
+                current_original_size=None,
+                current_output_size=None,
                 updated_at=now_iso(),
             )
-            source = await _call_with_floodwait(lambda: app.get_messages(int(job["source_chat_id"]), int(message_id)), f"get message {message_id}")
+            await update_owner_status(
+                job,
+                f"🗜️ HJ Compression Job #{job_id}\n\n"
+                f"Processing {idx}/{len(ids)}\nMessage: {message_id}\n"
+                f"Target: {float(job.get('target_mb') or 19):g} MB\n\n"
+                "Fetching Telegram media…",
+            )
+
+            source = await _call_with_floodwait(
+                lambda: app.get_messages(int(job["source_chat_id"]), int(message_id)),
+                f"get message {message_id}",
+            )
             if not source:
                 raise RuntimeError(f"Message {message_id} was not found")
+
             info = media_info(source)
             if not info:
                 raise RuntimeError(f"Message {message_id} has no supported media")
+
             if info["size"] <= target:
+                await update_index(int(job["source_chat_id"]), source)
                 skipped += 1
-                set_job(job_id, skipped_count=skipped, current_output_size=info["size"])
+                set_job(
+                    job_id,
+                    current_index=idx,
+                    skipped_count=skipped,
+                    failed_count=failures,
+                    current_original_size=info["size"],
+                    current_output_size=info["size"],
+                    last_error="",
+                )
                 continue
+
             if info["size"] > MAX_FILE_BYTES:
                 raise RuntimeError(
                     f"Input is {human_size(info['size'])}; this runner intentionally caps one file at 500 MB."
@@ -416,10 +509,15 @@ async def process_job(job):
                 await update_owner_status(
                     job,
                     f"🗜️ HJ Compression Job #{job_id}\n\n"
-                    f"Processing {idx}/{len(ids)}\nMessage: {message_id}\nOriginal: {human_size(info['size'])}\n"
-                    f"Target: {float(job.get('target_mb') or 19):g} MB\n\nDownloading…",
+                    f"Processing {idx}/{len(ids)}\nMessage: {message_id}\n"
+                    f"Original: {human_size(info['size'])}\n"
+                    f"Target: {float(job.get('target_mb') or 19):g} MB\n\n"
+                    "Downloading…",
                 )
-                downloaded = await _call_with_floodwait(lambda: app.download_media(source, file_name=src_path), f"download message {message_id}")
+                downloaded = await _call_with_floodwait(
+                    lambda: app.download_media(source, file_name=src_path),
+                    f"download message {message_id}",
+                )
                 if not downloaded or not Path(downloaded).exists():
                     raise RuntimeError("Telegram media download returned no file")
                 src_path = str(downloaded)
@@ -427,8 +525,8 @@ async def process_job(job):
                 await update_owner_status(
                     job,
                     f"🗜️ HJ Compression Job #{job_id}\n\n"
-                    f"Processing {idx}/{len(ids)}\nMessage: {message_id}\nOriginal: {human_size(info['size'])}\n\n"
-                    "Compressing…",
+                    f"Processing {idx}/{len(ids)}\nMessage: {message_id}\n"
+                    f"Original: {human_size(info['size'])}\n\nCompressing…",
                 )
                 if info["kind"] == "audio":
                     output_size = compress_audio(src_path, out_path, target, info["duration"])
@@ -439,6 +537,8 @@ async def process_job(job):
                 else:
                     output_size = optimize_document(src_path, out_path, info["name"])
 
+                if not Path(out_path).exists():
+                    raise RuntimeError("Compression produced no output file")
                 if output_size >= info["size"]:
                     raise RuntimeError(
                         f"Compressed file is not smaller ({human_size(output_size)} vs {human_size(info['size'])})"
@@ -451,7 +551,8 @@ async def process_job(job):
                 await update_owner_status(
                     job,
                     f"🗜️ HJ Compression Job #{job_id}\n\n"
-                    f"Processing {idx}/{len(ids)}\nMessage: {message_id}\nOriginal: {human_size(info['size'])}\n"
+                    f"Processing {idx}/{len(ids)}\nMessage: {message_id}\n"
+                    f"Original: {human_size(info['size'])}\n"
                     f"Compressed: {human_size(output_size)}\n\nUploading/replacing…",
                 )
                 media = build_input_media(info, out_path, source)
@@ -466,13 +567,74 @@ async def process_job(job):
                 if not edited:
                     raise RuntimeError("Telegram edit_message_media returned no result")
 
-                edited_info = media_info(edited)
-                if not edited_info or int(edited_info["size"]) > target:
-                    raise RuntimeError(
-                        "Telegram replacement did not produce a valid target-sized media file"
+                # Telegram's edit result is not sufficient proof. Verify the real
+                # storage message and, if verification fails, roll back while the
+                # original downloaded file is still inside the temporary directory.
+                try:
+                    verified = await _call_with_floodwait(
+                        lambda: app.get_messages(
+                            int(job["source_chat_id"]), int(message_id)
+                        ),
+                        f"verify replaced message {message_id}",
                     )
+                    if not verified:
+                        raise RuntimeError("Post-replacement Telegram verification returned no message")
+                    if int(verified.id) != int(message_id):
+                        raise RuntimeError(
+                            f"Telegram replacement changed message identity: expected {message_id}, got {verified.id}"
+                        )
+                    verified_info = media_info(verified)
+                    if not verified_info:
+                        raise RuntimeError("Verified Telegram message has no supported media")
+                    if verified_info["kind"] != info["kind"]:
+                        raise RuntimeError(
+                            f"Telegram replacement changed media kind: {info['kind']} -> {verified_info['kind']}"
+                        )
+                    if str(verified_info["file_id"]) == str(info["file_id"]):
+                        raise RuntimeError("Telegram file_id did not change after replacement")
+                    if int(verified_info["size"]) >= int(info["size"]):
+                        raise RuntimeError("Telegram replacement is not smaller than the original media")
+                    if int(verified_info["size"]) > int(target):
+                        raise RuntimeError("Telegram replacement exceeds the requested target size")
+                    if caption_signature(verified) != caption_signature(source):
+                        raise RuntimeError("Telegram replacement changed the caption or caption entities")
+                except Exception as verify_exc:
+                    rollback_ok = False
+                    try:
+                        restored = await _call_with_floodwait(
+                            lambda: app.edit_message_media(
+                                int(job["source_chat_id"]),
+                                int(message_id),
+                                build_input_media(info, src_path, source),
+                            ),
+                            f"rollback message {message_id}",
+                        )
+                        restored_check = await _call_with_floodwait(
+                            lambda: app.get_messages(
+                                int(job["source_chat_id"]), int(message_id)
+                            ),
+                            f"verify rollback {message_id}",
+                        )
+                        rollback_ok = bool(
+                            restored
+                            and restored_check
+                            and int(restored_check.id) == int(message_id)
+                            and caption_signature(restored_check) == caption_signature(source)
+                        )
+                    except Exception as rollback_exc:
+                        print(
+                            f"[JOB {job_id}] Rollback failed for message {message_id}: {rollback_exc}",
+                            flush=True,
+                        )
+                    if rollback_ok:
+                        raise RuntimeError(
+                            f"Post-replacement verification failed; original media was restored: {verify_exc}"
+                        ) from verify_exc
+                    raise RuntimeError(
+                        f"Post-replacement verification failed and rollback could not be verified: {verify_exc}"
+                    ) from verify_exc
 
-                await update_index(int(job["source_chat_id"]), edited)
+                await update_index(int(job["source_chat_id"]), verified)
                 successes += 1
                 set_job(
                     job_id,
@@ -480,49 +642,56 @@ async def process_job(job):
                     success_count=successes,
                     skipped_count=skipped,
                     failed_count=failures,
-                    current_output_size=int(edited_info["size"]),
+                    current_output_size=int(verified_info["size"]),
                     current_message_id=message_id,
                     last_error="",
                 )
+        except Exception as exc:
+            failures += 1
+            reason = str(exc)[:1000]
+            errors.append(f"Message {message_id}: {reason}")
+            set_job(
+                job_id,
+                current_index=idx,
+                success_count=successes,
+                skipped_count=skipped,
+                failed_count=failures,
+                current_message_id=message_id,
+                last_error=reason,
+            )
+            await update_owner_status(
+                {**job, "current_message_id": message_id},
+                f"❌ HJ Compression Job #{job_id} item failed\n\n"
+                f"Processing: {idx}/{len(ids)}\nMessage: {message_id}\n"
+                f"Error: {reason[:700]}\n\n"
+                "Continuing with other independent items…",
+            )
+            print(f"[JOB {job_id}] Message {message_id} FAILED: {reason}", flush=True)
+            continue
 
-        set_job(
-            job_id,
-            status="completed",
-            current_index=len(ids),
-            total_count=len(ids),
-            success_count=successes,
-            skipped_count=skipped,
-            failed_count=failures,
-            completed_at=now_iso(),
-            last_error="",
-        )
-        await update_owner_status(
-            job,
-            f"✅ HJ Compression Job #{job_id} completed\n\n"
-            f"Files: {len(ids)}\n✅ Compressed: {successes}\n⏭️ Skipped: {skipped}\n❌ Failed: {failures}",
-        )
-        return True
-    except Exception as exc:
-        failures += 1
-        set_job(
-            job_id,
-            status="failed",
-            current_index=min(int(job.get("current_index") or 0), len(ids)),
-            success_count=successes,
-            skipped_count=skipped,
-            failed_count=failures,
-            last_error=str(exc)[:1000],
-            completed_at=now_iso(),
-        )
-        current_message = job.get("current_message_id") or (ids[0] if len(ids) == 1 else "—")
-        await update_owner_status(
-            {**job, "current_message_id": current_message},
-            f"❌ HJ Compression Job #{job_id} failed\n\n"
-            f"Message: {current_message}\n"
-            f"Error: {str(exc)[:700]}",
-        )
-        print(f"[JOB {job_id}] FAILED: {exc}", flush=True)
-        return False
+    final_error = " | ".join(errors[-3:])[:1000] if errors else ""
+    final_status = "failed" if failures else "completed"
+    final_message = (
+        f"{'❌' if failures else '✅'} HJ Compression Job #{job_id} {final_status}\n\n"
+        f"Files: {len(ids)}\n✅ Compressed: {successes}\n"
+        f"⏭️ Skipped: {skipped}\n❌ Failed: {failures}"
+    )
+    if final_error:
+        final_message += f"\n\nLast errors:\n{final_error[:1600]}"
+
+    set_job(
+        job_id,
+        status=final_status,
+        current_index=len(ids),
+        total_count=len(ids),
+        success_count=successes,
+        skipped_count=skipped,
+        failed_count=failures,
+        completed_at=now_iso(),
+        last_error=final_error,
+    )
+    await update_owner_status(job, final_message)
+    return final_status == "completed"
 
 
 async def main():
