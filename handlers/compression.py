@@ -487,6 +487,49 @@ async def compress_bulk_command(bot, message):
     raise StopPropagation
 
 
+@Bot.on_message(filters.private & filters.command("compression_retry"), group=-5)
+async def compression_retry_command(_, message):
+    if not _owner(message.from_user.id):
+        await message.reply_text("⛔ Owner/Admin Only")
+        raise StopPropagation
+    args = list(message.command[1:])
+    if not args or not args[0].isdigit():
+        await message.reply_text("Use /compression_retry <job_id>.")
+        raise StopPropagation
+    try:
+        job_id = int(args[0])
+        result = await db._execute(
+            lambda: db.client.table("compression_jobs")
+            .update({
+                "status": "pending",
+                "current_index": 0,
+                "success_count": 0,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "current_message_id": None,
+                "current_original_size": None,
+                "current_output_size": None,
+                "last_error": "",
+                "started_at": None,
+                "completed_at": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", job_id)
+            .eq("requested_by", int(message.from_user.id))
+            .eq("status", "failed")
+            .execute(),
+            "retry compression job",
+        )
+        await message.reply_text(
+            f"✅ Job {job_id} returned to the queue." if result.data
+            else "⚠️ Job not found or is not failed.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 Jobs", callback_data="cmp:jobs")],
+            ]),
+        )
+    except Exception as exc:
+        await message.reply_text(f"❌ {str(exc)[:400]}")
+    raise StopPropagation
 @Bot.on_message(filters.private & filters.command("compression_status"), group=-5)
 async def compression_status_command(_, message):
     if not _owner(message.from_user.id):
@@ -569,6 +612,11 @@ async def _show_jobs(message, user_id):
             buttons.append([InlineKeyboardButton(
                 f"❌ Cancel #{row.get('id')}",
                 callback_data=f"cmp:cancel:{row.get('id')}",
+            )])
+        if status == "FAILED":
+            buttons.append([InlineKeyboardButton(
+                f"🔁 Retry #{row.get('id')}",
+                callback_data=f"cmp:retry:{row.get('id')}",
             )])
         if row.get("last_error") and status == "FAILED":
             lines.append(f"Error: {str(row['last_error'])[:180]}")
@@ -732,6 +780,37 @@ async def compression_callback(bot, query: CallbackQuery):
         elif action == "stream":
             await _show_stream_status(query.message)
             await query.answer()
+
+        elif action == "retry" and len(parts) >= 3:
+            job_id = int(parts[2])
+            result = await db._execute(
+                lambda: db.client.table("compression_jobs")
+                .update({
+                    "status": "pending",
+                    "current_index": 0,
+                    "success_count": 0,
+                    "skipped_count": 0,
+                    "failed_count": 0,
+                    "current_message_id": None,
+                    "current_original_size": None,
+                    "current_output_size": None,
+                    "last_error": "",
+                    "started_at": None,
+                    "completed_at": None,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+                .eq("id", job_id)
+                .eq("requested_by", int(query.from_user.id))
+                .eq("status", "failed")
+                .execute(),
+                "retry compression job",
+            )
+            if result.data:
+                await query.answer(f"Job {job_id} requeued.")
+            else:
+                await query.answer("Job is not failed or was not found.", show_alert=True)
+            await _show_jobs(query.message, int(query.from_user.id))
+            return
 
         elif action == "cancel" and len(parts) >= 3:
             job_id = int(parts[2])
