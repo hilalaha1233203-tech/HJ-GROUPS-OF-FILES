@@ -312,14 +312,20 @@ def optimize_document(src, dst, name):
         return Path(dst).stat().st_size
     if lower.endswith((".zip", ".epub", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp")):
         import zipfile
+        import copy
         with zipfile.ZipFile(src, "r") as zin, zipfile.ZipFile(
             dst, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
         ) as zout:
             for item in zin.infolist():
                 if item.is_dir():
                     zout.writestr(item, b"")
-                else:
-                    zout.writestr(item, zin.read(item.filename))
+                    continue
+                # Reuse the source metadata but explicitly force DEFLATE.
+                # Passing the original ZipInfo unchanged preserves ZIP_STORED
+                # entries and can make the "optimized" file identical in size.
+                optimized_info = copy.copy(item)
+                optimized_info.compress_type = zipfile.ZIP_DEFLATED
+                zout.writestr(optimized_info, zin.read(item.filename))
         return Path(dst).stat().st_size
     raise RuntimeError("Safe document optimisation is unavailable for this file type")
 
