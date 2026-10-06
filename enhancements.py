@@ -487,7 +487,7 @@ save_media.save_media_in_channel=enhanced_save_single
 save_media.save_batch_media_in_channel=enhanced_save_batch
 
 async def show_settings(msg):
-    await msg.reply_text("**Settings**\nCustomize your settings as your need",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 URL SHORTENER",callback_data="hjset_shortener")],[InlineKeyboardButton("✏️ CUSTOM CAPTION",callback_data="hjset_caption")],[InlineKeyboardButton("🔘 CUSTOM BUTTON",callback_data="hjset_button")],[InlineKeyboardButton("🛡 PROTECT CONTENT",callback_data="hjset_protect")],[InlineKeyboardButton("⏱ AUTO DELETE TIMER",callback_data="hjset_auto_delete")],[InlineKeyboardButton("< BACK",callback_data="hjset_main")]]))
+    await msg.reply_text("**Settings**\nCustomize your settings as your need",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔗 URL SHORTENER",callback_data="hjset_shortener")],[InlineKeyboardButton("✏️ CUSTOM CAPTION",callback_data="hjset_caption")],[InlineKeyboardButton("🔘 CUSTOM BUTTON",callback_data="hjset_button")],[InlineKeyboardButton("🛡 PROTECT CONTENT",callback_data="hjset_protect")],[InlineKeyboardButton("⏱ AUTO DELETE TIMER",callback_data="hjset_auto_delete")],[InlineKeyboardButton("🗜️ COMPRESSION CENTER",callback_data="cmp:center")],[InlineKeyboardButton("< BACK",callback_data="hjset_main")]]))
 @Bot.on_message(filters.private & filters.command("settings"),group=-2)
 async def settings_cmd(_,m):
     if not _owner(m.from_user.id): await m.reply_text("⛔ Owner/Admin Only"); raise StopPropagation
