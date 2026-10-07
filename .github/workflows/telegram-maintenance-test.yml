@@ -182,6 +182,7 @@ jobs:
           shim_dir="$RUNNER_TEMP/hj-indexer-shim"
           mkdir -p "$shim_dir"
           cat > "$shim_dir/sitecustomize.py" <<'PY'
+          import asyncio
           import os
           import pyrogram
 
@@ -195,10 +196,58 @@ jobs:
                       kwargs["session_string"] = _session
                       super().__init__(*args, **kwargs)
 
+                  async def start(self, *args, **kwargs):
+                      loop = asyncio.get_running_loop()
+                      self.loop = loop
+                      self.dispatcher.loop = loop
+                      return await super().start(*args, **kwargs)
+
+                  async def stop(self, *args, **kwargs):
+                      loop = asyncio.get_running_loop()
+                      self.loop = loop
+                      self.dispatcher.loop = loop
+                      return await super().stop(*args, **kwargs)
+
               pyrogram.Client = IndexerUserSessionClient
           PY
 
           echo "User-session bridge prepared for the indexer; session value is not printed."
+
+      - name: Verify Telegram user-session identity
+        if: steps.config.outputs.configured == 'true'
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          TELEGRAM_USER_SESSION_STRING: ${{ secrets.TELEGRAM_USER_SESSION_STRING }}
+          PYTHONPATH: ${{ runner.temp }}/hj-indexer-shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          import os
+          from pyrogram import Client
+
+          async def main():
+              app = Client(
+                  "hj_user_session_check",
+                  api_id=int(os.environ["API_ID"]),
+                  api_hash=os.environ["API_HASH"],
+                  session_string=os.environ["TELEGRAM_USER_SESSION_STRING"].strip(),
+                  in_memory=True,
+                  no_updates=True,
+              )
+              await app.start()
+              try:
+                  me = await app.get_me()
+                  if getattr(me, "is_bot", False):
+                      raise SystemExit("ERROR: TELEGRAM_USER_SESSION_STRING is a bot session. A personal Telegram user session is required.")
+                  print("Telegram user session verified: is_bot=false")
+              finally:
+                  await app.stop()
+
+          asyncio.run(main())
+          PY
 
       - name: Run existing Telegram media indexer
         if: steps.config.outputs.configured == 'true'
