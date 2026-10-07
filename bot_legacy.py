@@ -528,7 +528,7 @@ async def settings(_, m: Message):
             "⛔ **Owner/Admin Only**\n\n"
             f"Your Telegram ID: `{m.from_user.id}`\n"
             f"Configured BOT_OWNER: `{configured}`\n\n"
-            "If you are the owner, set **BOT_OWNER** in Voroa to your Telegram user ID, then redeploy/restart the bot."
+            "If you are the owner, set **BOT_OWNER** in the production runtime to your Telegram user ID, then redeploy/restart the bot."
         )
         return
     await show_settings(m)
