@@ -15,7 +15,7 @@ From the Supabase project dashboard, get:
 
 For a server-side worker, use the Supabase secret key. A legacy `service_role` key is also accepted by this bot for compatibility. Do not expose either secret in source code or commit it to GitHub.
 
-## 3. Voroa environment variables
+## 3. Production runtime environment variables
 
 Keep the existing Telegram/bot variables. Remove the old MongoDB `DATABASE_URL` if it is no longer used, and add:
 
@@ -27,7 +27,9 @@ The code also accepts `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_KEY` as compatibi
 
 ## 4. Deploy
 
-After saving the variables in Voroa, redeploy the Background Worker. The bot database layer keeps the original `Database` method interface, so the existing bot handlers and broadcast flow continue to call the same methods.
+The bot remains the existing long-running Pyrogram implementation. The intended Cloudflare migration requires a Cloudflare Container runtime; Cloudflare Containers are currently available only on the Workers Paid plan. Do not replace the Pyrogram runtime with a Worker-only rewrite, and do not remove the existing runtime until the production Container runtime is enabled and verified.
+
+The bot database layer keeps the original `Database` method interface, so the existing bot handlers and broadcast flow continue to call the same methods.
 
 
 ## 5. Admin auto-delete setting
@@ -87,8 +89,6 @@ Configure these Worker secrets/variables:
 `MEDIA_INDEX_SUPABASE_URL` — Store Keeper project URL when it differs from the website project
 `MEDIA_INDEX_SUPABASE_SERVICE_ROLE_KEY` — Store Keeper project service-role/secret key
 `HJ_WEB_BASE_URL`
-`MEDIA_TICKET_SECRET`
-`CORS_ALLOWED_ORIGINS`
 `MEDIA_TICKET_SECRET`
 `CORS_ALLOWED_ORIGINS`
 
