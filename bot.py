@@ -2,6 +2,7 @@ import bot_legacy
 import enhancements
 import direct_link_fix
 import handlers.caption_replace
+import handlers.compression
 from pyrogram import filters, StopPropagation
 from pyrogram.types import Message, BotCommand, BotCommandScopeAllPrivateChats, InlineKeyboardMarkup, InlineKeyboardButton
 from configs import Config
@@ -120,6 +121,12 @@ async def setup_bot_commands():
         BotCommand("caption_replace","Owner caption replace"),
         BotCommand("set_caption","Owner bulk set caption"),
         BotCommand("set_thumbnail","Owner bulk set thumbnail"),
+        BotCommand("compression","Open compression center"),
+        BotCommand("compress","Compress one storage media"),
+        BotCommand("compress_bulk","Bulk compress storage media"),
+        BotCommand("compression_status","Show compression jobs"),
+        BotCommand("compression_cancel","Cancel a pending compression job"),
+        BotCommand("compression_retry","Retry a failed compression job"),
     ]
     # Set both the default scope and all-private-chats scope. Telegram clients
     # prefer a more specific scope over the default, so this prevents a stale

@@ -93,6 +93,14 @@ Use **Commands** to view all available commands and features.
 ➜ `/clear_batch` — Clear your current batch selection.
 
 🛠️ **Owner Maintenance Commands**
+
+➜ `/compression` — Open the HJ compression center.
+➜ `/compress` — Compress one storage-channel media message.
+➜ `/compress_bulk` — Bulk-compress storage media by message-ID range.
+➜ `/compression_status` — View compression job progress.
+➜ `/compression_cancel` — Cancel a pending compression job.
+➜ `/compression_retry` — Requeue a failed compression job.
+
 ➜ `/caption_replace` — Select an admin channel and exact-replace text inside its media captions. Private channels can be added by forwarding one message.
 ➜ `/set_caption` — Select an admin channel and set a caption across all or a message-ID range.
 

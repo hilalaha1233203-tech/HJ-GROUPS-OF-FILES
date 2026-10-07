@@ -40,6 +40,7 @@ FILESTORE_COMMANDS = [
     "broadcast", "ban", "unban", "status", "ban_user",
     "unban_user", "banned_users", "direct", "direct_batch",
     "caption_replace", "set_caption", "set_thumbnail",
+    "compression", "compress", "compress_bulk", "compression_status", "compression_cancel", "compression_retry",
 ]
 
 Bot = Client(
@@ -179,7 +180,8 @@ async def start(bot: Client, cmd: Message):
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📋 Commands", callback_data="commands")],
-                [InlineKeyboardButton("About Bot", callback_data="aboutbot"), InlineKeyboardButton("Close 🚪", callback_data="closeMessage")]
+                [InlineKeyboardButton("🗜️ Compression Center", callback_data="cmp:center")],
+            [InlineKeyboardButton("About Bot", callback_data="aboutbot"), InlineKeyboardButton("Close 🚪", callback_data="closeMessage")]
             ])
         )
         return
@@ -732,6 +734,7 @@ async def button(bot: Client, cmd: CallbackQuery):
             Config.COMMANDS_TEXT,
             disable_web_page_preview=True,
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗜️ Compression Center", callback_data="cmp:center")],
                 [InlineKeyboardButton("🏠 Go Home", callback_data="gotohome")],
                 [InlineKeyboardButton("About Bot", callback_data="aboutbot")]
             ])

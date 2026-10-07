@@ -1,0 +1,43 @@
+name: Store Keeper feature checks
+
+on:
+  push:
+    branches:
+      - main
+      - feat/storekeeper-compression-streaming
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install media test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg ghostscript
+          ffmpeg -version | head -n 1
+          gs --version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-maintenance.txt
+
+      - name: Compile all Python sources
+        run: python -m compileall -q bot.py bot_legacy.py enhancements.py handlers scripts
+
+      - name: Compression unit tests
+        run: python -m unittest discover -s scripts -p 'test*.py' -v
