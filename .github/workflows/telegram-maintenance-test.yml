@@ -166,10 +166,46 @@ jobs:
           set -euo pipefail
           python scripts/compression_runner.py
 
+      - name: Prepare user-session bridge for Telegram history indexing
+        if: steps.config.outputs.configured == 'true'
+        env:
+          TELEGRAM_USER_SESSION_STRING: ${{ secrets.TELEGRAM_USER_SESSION_STRING }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$TELEGRAM_USER_SESSION_STRING" ]]; then
+            echo "::error::Historical Telegram media indexing requires TELEGRAM_USER_SESSION_STRING because Telegram does not allow bots to call messages.GetHistory."
+            echo "Add a Pyrogram user-account session string as a GitHub Actions secret. It must belong to a Telegram account that can access the configured storage channel."
+            exit 1
+          fi
+
+          shim_dir="$RUNNER_TEMP/hj-indexer-shim"
+          mkdir -p "$shim_dir"
+          cat > "$shim_dir/sitecustomize.py" <<'PY'
+          import os
+          import pyrogram
+
+          _session = os.environ.get("TELEGRAM_USER_SESSION_STRING", "").strip()
+          if _session:
+              _Client = pyrogram.Client
+
+              class IndexerUserSessionClient(_Client):
+                  def __init__(self, *args, **kwargs):
+                      kwargs.pop("bot_token", None)
+                      kwargs["session_string"] = _session
+                      super().__init__(*args, **kwargs)
+
+              pyrogram.Client = IndexerUserSessionClient
+          PY
+
+          echo "User-session bridge prepared for the indexer; session value is not printed."
+
       - name: Run existing Telegram media indexer
         if: steps.config.outputs.configured == 'true'
         env:
           MEDIA_INDEX_MAX_MESSAGES: "5000"
+          TELEGRAM_USER_SESSION_STRING: ${{ secrets.TELEGRAM_USER_SESSION_STRING }}
+          PYTHONPATH: ${{ runner.temp }}/hj-indexer-shim
         shell: bash
         run: |
           set -euo pipefail
