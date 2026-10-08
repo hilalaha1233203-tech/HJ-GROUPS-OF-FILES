@@ -723,6 +723,10 @@ async def process_job(job):
 
 
 async def main():
+    raise RuntimeError(
+        "Legacy in-place compression runner is disabled. It can replace original Telegram media. "
+        "Use the preservation-safe manual streaming split/compression workflow instead."
+    )
     init_runtime()
     max_jobs = int(os.environ.get("MAX_COMPRESSION_JOBS", DEFAULT_MAX_JOBS))
     jobs = await fetch_jobs(max_jobs)
