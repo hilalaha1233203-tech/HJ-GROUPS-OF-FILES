@@ -1,0 +1,52 @@
+name: HJ Streaming Lazy Mapping
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_kind:
+        description: "HJ Web content kind: audio, video, or book"
+        required: true
+        type: choice
+        options:
+          - audio
+          - video
+          - book
+      source_chat_id:
+        description: "Configured Telegram storage chat ID"
+        required: true
+        type: string
+      source_message_id:
+        description: "One Telegram message ID only"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  map-one:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      WEB_SUPABASE_URL: ${{ secrets.WEB_SUPABASE_URL }}
+      WEB_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.WEB_SUPABASE_SERVICE_ROLE_KEY }}
+      CONTENT_KIND: ${{ inputs.content_kind }}
+      SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
+      SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install mapping dependencies
+        run: python -m pip install -r requirements-maintenance.txt
+
+      - name: Verify and map exactly one Telegram message
+        run: python scripts/streaming_lazy_mapper.py
