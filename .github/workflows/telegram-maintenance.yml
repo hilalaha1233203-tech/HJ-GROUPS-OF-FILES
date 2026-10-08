@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       max_compression_jobs:
-        description: "Maximum queued jobs to process in this manual run"
+        description: "Legacy compression queue is intentionally disabled; use the single-item safe workflows."
         required: false
-        default: "1"
+        default: "0"
 
 concurrency:
   group: hj-telegram-maintenance
@@ -67,12 +67,6 @@ jobs:
       - name: Install maintenance dependencies
         if: steps.config.outputs.configured == 'true'
         run: python -m pip install -r requirements-maintenance.txt
-
-      - name: Process compression queue
-        if: steps.config.outputs.configured == 'true'
-        env:
-          MAX_COMPRESSION_JOBS: ${{ github.event.inputs.max_compression_jobs || '1' }}
-        run: python scripts/compression_runner.py
 
       - name: Configuration status
         if: steps.config.outputs.configured != 'true'
