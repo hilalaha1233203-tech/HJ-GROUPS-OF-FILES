@@ -72,3 +72,23 @@ NOT VERIFIED:
 - The legacy compression runner still contains in-place `edit_message_media` behavior and must not be used for production originals until replaced by the preservation-safe maintenance path.
 
 No 950-item bulk operation was performed.
+
+
+## Phase 2026-10-08 — latest checkpoint
+
+### Implemented
+- Legacy automatic 5-minute maintenance trigger is removed.
+- Automatic bulk Telegram media-index refresh is removed from the maintenance workflow.
+- Legacy in-place `compression_runner.py` execution is fail-closed and is no longer invoked by the maintenance workflow because it could replace original Telegram media.
+- Added manual `streaming_lazy_mapping.yml` for exactly one mapping at a time. It reads one exact `telegram_media_index` row from the Files Supabase project and verifies the stored Bot API `file_id` through official `getFile` before writing the HJ Web mapping.
+- Added manual `streaming-split-one.yml` for exactly one original Telegram message at a time. It uses the existing personal Telegram user-session secret for maintenance download only, creates new <=19 MiB derivative Telegram document messages, verifies uploaded message/file sizes, then writes the HJ Web multi-part mapping. The original Telegram message is never edited/deleted.
+- No Telegram session was regenerated.
+
+### NOT VERIFIED
+- Neither new manual workflow has been executed with real secrets in GitHub Actions.
+- No production content was split or mapped.
+- No 950-row/bulk operation was performed.
+- Preservation-safe compression (as distinct from byte splitting) is still pending; the old in-place compressor must remain disabled.
+
+### Safety
+Only newly-created derivative chunk messages may be removed on a failed run. Original Telegram media is never part of cleanup.
