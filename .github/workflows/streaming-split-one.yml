@@ -1,0 +1,76 @@
+name: HJ Streaming Split One Media
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_kind:
+        description: "HJ Web content kind"
+        required: true
+        type: choice
+        options:
+          - audio
+          - video
+          - book
+      source_chat_id:
+        description: "Original Telegram storage chat ID"
+        required: true
+        type: string
+      source_message_id:
+        description: "Exactly one original Telegram message ID"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  split-one:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      API_ID: ${{ secrets.API_ID }}
+      API_HASH: ${{ secrets.API_HASH }}
+      BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+      TELEGRAM_USER_SESSION_STRING: ${{ secrets.TELEGRAM_USER_SESSION_STRING }}
+      TARGET_STORAGE_CHAT_ID: ${{ secrets.DB_CHANNEL }}
+      WEB_SUPABASE_URL: ${{ secrets.WEB_SUPABASE_URL }}
+      WEB_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.WEB_SUPABASE_SERVICE_ROLE_KEY }}
+      CONTENT_KIND: ${{ inputs.content_kind }}
+      SOURCE_CHAT_ID: ${{ inputs.source_chat_id }}
+      SOURCE_MESSAGE_ID: ${{ inputs.source_message_id }}
+    steps:
+      - name: Validate non-secret inputs and required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_MESSAGE_ID" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::source_message_id must be a positive integer."
+            exit 1
+          }
+          missing=()
+          for name in API_ID API_HASH BOT_TOKEN TELEGRAM_USER_SESSION_STRING TARGET_STORAGE_CHAT_ID WEB_SUPABASE_URL WEB_SUPABASE_SERVICE_ROLE_KEY; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if ((${#missing[@]})); then
+            echo "::error::Required secret/configuration values are missing: ${missing[*]}"
+            exit 1
+          fi
+          echo "Configuration present; secret values are not printed."
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-maintenance.txt
+
+      - name: Install maintenance dependencies
+        run: python -m pip install -r requirements-maintenance.txt
+
+      - name: Run single-message split and verified mapping
+        run: python scripts/streaming_split_one.py
