@@ -176,7 +176,7 @@ async def main():
         source_path=Path(tmp)/"source.bin"
         downloaded_path,source_info=await download_source(api_id,api_hash,user_session,source_chat_id,source_message_id,source_path)
         if source_info["kind"] != expected_media_kind(content_kind):
-            raise RuntimeError(f"Content/media kind mismatch: requested {content_kind}, Telegram source is {source_info["kind"]}.")
+            raise RuntimeError("Content/media kind mismatch: requested {}, Telegram source is {}.".format(content_kind, source_info["kind"]))
         actual_size=downloaded_path.stat().st_size
         if actual_size != int(source_info["file_size"]): raise RuntimeError("Downloaded source size mismatch.")
         if actual_size <= CHUNK_BYTES: raise RuntimeError("Source does not require splitting; use the lazy single-message mapper.")
@@ -189,7 +189,7 @@ async def main():
             while True:
                 chunk=source.read(CHUNK_BYTES)
                 if not chunk: break
-                part_path=Path(tmp)/(f"{Path(source_info["file_name"]).name}.part-{index+1:04d}")
+                part_path=Path(tmp) / ("{}.part-{:04d}".format(Path(source_info["file_name"]).name, index + 1))
                 part_path.write_bytes(chunk)
                 if part_path.stat().st_size<=0 or part_path.stat().st_size>CHUNK_BYTES: raise RuntimeError("Created chunk has invalid size.")
                 parts.append(part_path); index += 1
