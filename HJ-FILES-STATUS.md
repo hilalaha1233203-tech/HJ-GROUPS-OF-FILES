@@ -53,3 +53,22 @@ The new mapping table is currently empty (verified SQL row count: 0), so no exis
 ## Status
 
 PARTIALLY COMPLETED — Files remains an independent maintenance utility. No production content operation was performed in this phase.
+
+
+## 2026-10-08 phase update
+
+Verified code changes:
+- The former 5-minute scheduled maintenance trigger was removed from `.github/workflows/telegram-maintenance.yml`.
+- Automatic Telegram media-index refresh was removed from that workflow.
+- A manual, single-message lazy mapper was added at `scripts/streaming_lazy_mapper.py`.
+- Manual workflow `.github/workflows/streaming-lazy-mapping.yml` accepts exactly one content kind and one Telegram message ID.
+- The mapper verifies the authoritative Telegram `file_id` through Pyrogram and writes only the selected <=20 MB single-part mapping to HJ Web Supabase.
+- It does not edit/replace the original Telegram message and does not delete Telegram media.
+- Required web-database secrets are referenced only as GitHub Actions secrets; no secret values were committed.
+
+NOT VERIFIED:
+- The manual mapper has not been run with real GitHub Actions secrets in this phase.
+- The preservation-safe >20 MB split/upload workflow and streaming Worker reassembly are not implemented yet.
+- The legacy compression runner still contains in-place `edit_message_media` behavior and must not be used for production originals until replaced by the preservation-safe maintenance path.
+
+No 950-item bulk operation was performed.
