@@ -1,14 +1,12 @@
 name: HJ Telegram Maintenance
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       max_compression_jobs:
-        description: "Maximum compression jobs to process in this run"
+        description: "Maximum queued jobs to process in this manual run"
         required: false
-        default: "10"
+        default: "1"
 
 concurrency:
   group: hj-telegram-maintenance
@@ -73,14 +71,8 @@ jobs:
       - name: Process compression queue
         if: steps.config.outputs.configured == 'true'
         env:
-          MAX_COMPRESSION_JOBS: ${{ github.event.inputs.max_compression_jobs || '10' }}
+          MAX_COMPRESSION_JOBS: ${{ github.event.inputs.max_compression_jobs || '1' }}
         run: python scripts/compression_runner.py
-
-      - name: Refresh Telegram media index
-        if: steps.config.outputs.configured == 'true'
-        env:
-          MEDIA_INDEX_MAX_MESSAGES: "5000"
-        run: python scripts/media_indexer.py
 
       - name: Configuration status
         if: steps.config.outputs.configured != 'true'
